@@ -104,7 +104,7 @@ def train():
     print(f">>> DIN dataset size: {len(dataset)}")
     dataloader = DataLoader(
         dataset, batch_size=config.DIN_BATCH_SIZE, shuffle=True,
-        num_workers=0, collate_fn=collate_fn
+        num_workers=4, collate_fn=collate_fn, persistent_workers=True
     )
 
     # ================================================================

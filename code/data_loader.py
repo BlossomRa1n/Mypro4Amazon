@@ -375,13 +375,28 @@ class TwoTowerDataset(Dataset):
         self.interactions = click_df[['user_idx', 'item_idx']].values
         self.weights = click_df['click_weight'].values.astype(np.float32)
 
-        self.user_features = user_features
-        self.item_features = item_features
         self.num_items = num_items
         self.hist_len = hist_len
         self.num_negatives = num_negatives
 
-        self.user_hist_dict = {}
+        # --- 预构建 idx_to_raw 反向映射 (只做一次，不在 __getitem__ 里重复建) ---
+        if self.raw_to_idx is not None:
+            self.idx_to_raw = {v: k for k, v in self.raw_to_idx.items()}
+        else:
+            self.idx_to_raw = None
+
+        # --- 构建 raw_id -> user_features 行的快速查找 ---
+        user_feat_idx = {}
+        for i, row in user_features.iterrows():
+            user_feat_idx[row['user_id']] = i
+        self._user_feat_rows = user_features.iloc  # 整行访问
+
+        # --- 预构建 user 特征数组 (按 user_idx 索引) ---
+        num_users = len(self.user_le.classes_)
+        self.user_hist_arr = [None] * num_users
+        self.user_click_cnt_arr = np.zeros(num_users, dtype=np.float32)
+        self.user_time_span_arr = np.zeros(num_users, dtype=np.float32)
+
         for _, row in user_features.iterrows():
             raw_uid = row['user_id']
             if self.raw_to_idx is not None:
@@ -391,7 +406,19 @@ class TwoTowerDataset(Dataset):
             else:
                 uid_idx = None
             if uid_idx is not None:
-                self.user_hist_dict[uid_idx] = row['hist_items_trunc']
+                self.user_hist_arr[uid_idx] = row['hist_items_trunc']
+                self.user_click_cnt_arr[uid_idx] = row['click_count_norm']
+                self.user_time_span_arr[uid_idx] = row['time_span_norm']
+
+        # --- 预构建 item 特征数组 (按 item_idx 索引) ---
+        num_all_items = len(self.item_le.classes_)
+        self.item_cat_arr = np.zeros(num_all_items, dtype=np.int64)
+        self.item_click_arr = np.zeros(num_all_items, dtype=np.float32)
+        self.item_created_arr = np.zeros(num_all_items, dtype=np.float32)
+        for idx in item_features.index:
+            self.item_cat_arr[idx] = int(item_features.loc[idx].get('category_idx', 0))
+            self.item_click_arr[idx] = float(item_features.loc[idx].get('item_click_count_norm', 0))
+            self.item_created_arr[idx] = float(item_features.loc[idx].get('created_at_ts_norm', 0))
 
         self.item_popularity = np.ones(num_items, dtype=np.float32)
         item_counts = click_df['item_idx'].value_counts()
@@ -403,7 +430,9 @@ class TwoTowerDataset(Dataset):
         return len(self.interactions)
 
     def _get_user_data(self, user_idx):
-        hist_items = self.user_hist_dict.get(user_idx, [])
+        hist_items = self.user_hist_arr[user_idx]
+        if hist_items is None:
+            hist_items = []
         hist_len_actual = len(hist_items)
 
         if hist_len_actual < self.hist_len:
@@ -412,39 +441,18 @@ class TwoTowerDataset(Dataset):
             padded = hist_items[-self.hist_len:]
             hist_len_actual = self.hist_len
 
-        if self.raw_to_idx is not None:
-            idx_to_raw = {v: k for k, v in self.raw_to_idx.items()}
-            raw_uid = idx_to_raw.get(user_idx)
-        else:
-            raw_uid = self.user_le.inverse_transform([user_idx])[0]
-
-        user_row = self.user_features[self.user_features['user_id'] == raw_uid]
-        if len(user_row) > 0:
-            click_count_norm = user_row.iloc[0]['click_count_norm']
-            time_span_norm = user_row.iloc[0]['time_span_norm']
-        else:
-            click_count_norm = 0.0
-            time_span_norm = 0.0
-
         return {
             'hist_items': torch.LongTensor(padded),
             'hist_len': torch.tensor(hist_len_actual, dtype=torch.long),
-            'click_count': torch.tensor(click_count_norm, dtype=torch.float32),
-            'time_span': torch.tensor(time_span_norm, dtype=torch.float32),
+            'click_count': torch.tensor(self.user_click_cnt_arr[user_idx], dtype=torch.float32),
+            'time_span': torch.tensor(self.user_time_span_arr[user_idx], dtype=torch.float32),
         }
 
     def _get_item_data(self, item_idx):
-        if item_idx in self.item_features.index:
-            row = self.item_features.loc[item_idx]
-            return {
-                'category_id': torch.tensor(int(row.get('category_idx', 0)), dtype=torch.long),
-                'item_click_count': torch.tensor(float(row.get('item_click_count_norm', 0)), dtype=torch.float32),
-                'created_at_ts': torch.tensor(float(row.get('created_at_ts_norm', 0)), dtype=torch.float32),
-            }
         return {
-            'category_id': torch.tensor(0, dtype=torch.long),
-            'item_click_count': torch.tensor(0.0, dtype=torch.float32),
-            'created_at_ts': torch.tensor(0.0, dtype=torch.float32),
+            'category_id': torch.tensor(self.item_cat_arr[item_idx], dtype=torch.long),
+            'item_click_count': torch.tensor(self.item_click_arr[item_idx], dtype=torch.float32),
+            'created_at_ts': torch.tensor(self.item_created_arr[item_idx], dtype=torch.float32),
         }
 
     def __getitem__(self, idx):
@@ -493,14 +501,22 @@ class TwoTowerV2Dataset(Dataset):
         self.interactions = click_df[['user_idx', 'item_idx']].values
         self.weights = click_df['click_weight'].values.astype(np.float32)
 
-        self.user_features = user_features
-        self.item_features = item_features
         self.num_items = num_items
         self.hist_len = hist_len
         self.hard_neg_index = hard_neg_index or {}
         self.num_hard_negatives = num_hard_negatives
 
-        self.user_hist_dict = {}
+        # --- 预构建数组 (只做一次，__getitem__ 纯数组下标) ---
+        if self.raw_to_idx is not None:
+            self.idx_to_raw = {v: k for k, v in self.raw_to_idx.items()}
+        else:
+            self.idx_to_raw = None
+
+        num_users = len(self.user_le.classes_)
+        self.user_hist_arr = [None] * num_users
+        self.user_click_cnt_arr = np.zeros(num_users, dtype=np.float32)
+        self.user_time_span_arr = np.zeros(num_users, dtype=np.float32)
+
         for _, row in user_features.iterrows():
             raw_uid = row['user_id']
             if self.raw_to_idx is not None:
@@ -510,13 +526,26 @@ class TwoTowerV2Dataset(Dataset):
             else:
                 uid_idx = None
             if uid_idx is not None:
-                self.user_hist_dict[uid_idx] = row['hist_items_trunc']
+                self.user_hist_arr[uid_idx] = row['hist_items_trunc']
+                self.user_click_cnt_arr[uid_idx] = row['click_count_norm']
+                self.user_time_span_arr[uid_idx] = row['time_span_norm']
+
+        num_all_items = len(self.item_le.classes_)
+        self.item_cat_arr = np.zeros(num_all_items, dtype=np.int64)
+        self.item_click_arr = np.zeros(num_all_items, dtype=np.float32)
+        self.item_created_arr = np.zeros(num_all_items, dtype=np.float32)
+        for idx in item_features.index:
+            self.item_cat_arr[idx] = int(item_features.loc[idx].get('category_idx', 0))
+            self.item_click_arr[idx] = float(item_features.loc[idx].get('item_click_count_norm', 0))
+            self.item_created_arr[idx] = float(item_features.loc[idx].get('created_at_ts_norm', 0))
 
     def __len__(self):
         return len(self.interactions)
 
     def _get_user_data(self, user_idx):
-        hist_items = self.user_hist_dict.get(user_idx, [])
+        hist_items = self.user_hist_arr[user_idx]
+        if hist_items is None:
+            hist_items = []
         hist_len_actual = len(hist_items)
 
         if hist_len_actual < self.hist_len:
@@ -525,39 +554,18 @@ class TwoTowerV2Dataset(Dataset):
             padded = hist_items[-self.hist_len:]
             hist_len_actual = self.hist_len
 
-        if self.raw_to_idx is not None:
-            idx_to_raw = {v: k for k, v in self.raw_to_idx.items()}
-            raw_uid = idx_to_raw.get(user_idx)
-        else:
-            raw_uid = self.user_le.inverse_transform([user_idx])[0]
-
-        user_row = self.user_features[self.user_features['user_id'] == raw_uid]
-        if len(user_row) > 0:
-            click_count_norm = user_row.iloc[0]['click_count_norm']
-            time_span_norm = user_row.iloc[0]['time_span_norm']
-        else:
-            click_count_norm = 0.0
-            time_span_norm = 0.0
-
         return {
             'hist_items': torch.LongTensor(padded),
             'hist_len': torch.tensor(hist_len_actual, dtype=torch.long),
-            'click_count': torch.tensor(click_count_norm, dtype=torch.float32),
-            'time_span': torch.tensor(time_span_norm, dtype=torch.float32),
+            'click_count': torch.tensor(self.user_click_cnt_arr[user_idx], dtype=torch.float32),
+            'time_span': torch.tensor(self.user_time_span_arr[user_idx], dtype=torch.float32),
         }
 
     def _get_item_data(self, item_idx):
-        if item_idx in self.item_features.index:
-            row = self.item_features.loc[item_idx]
-            return {
-                'category_id': torch.tensor(int(row.get('category_idx', 0)), dtype=torch.long),
-                'item_click_count': torch.tensor(float(row.get('item_click_count_norm', 0)), dtype=torch.float32),
-                'created_at_ts': torch.tensor(float(row.get('created_at_ts_norm', 0)), dtype=torch.float32),
-            }
         return {
-            'category_id': torch.tensor(0, dtype=torch.long),
-            'item_click_count': torch.tensor(0.0, dtype=torch.float32),
-            'created_at_ts': torch.tensor(0.0, dtype=torch.float32),
+            'category_id': torch.tensor(self.item_cat_arr[item_idx], dtype=torch.long),
+            'item_click_count': torch.tensor(self.item_click_arr[item_idx], dtype=torch.float32),
+            'created_at_ts': torch.tensor(self.item_created_arr[item_idx], dtype=torch.float32),
         }
 
     def __getitem__(self, idx):
@@ -632,11 +640,19 @@ class DINDataset(Dataset):
                     if neg_count <= 0:
                         break
 
-        self.user_features = user_features
-        self.item_features = item_features
         self.hist_len = hist_len
 
-        self.user_hist_dict = {}
+        # --- 预构建数组 (只做一次，__getitem__ 纯数组下标) ---
+        if self.raw_to_idx is not None:
+            self.idx_to_raw = {v: k for k, v in self.raw_to_idx.items()}
+        else:
+            self.idx_to_raw = None
+
+        num_users = len(self.user_le.classes_)
+        self.user_hist_arr = [None] * num_users
+        self.user_click_cnt_arr = np.zeros(num_users, dtype=np.float32)
+        self.user_time_span_arr = np.zeros(num_users, dtype=np.float32)
+
         for _, row in user_features.iterrows():
             raw_uid = row['user_id']
             if self.raw_to_idx is not None:
@@ -646,13 +662,26 @@ class DINDataset(Dataset):
             else:
                 uid_idx = None
             if uid_idx is not None:
-                self.user_hist_dict[uid_idx] = row['hist_items_trunc']
+                self.user_hist_arr[uid_idx] = row['hist_items_trunc']
+                self.user_click_cnt_arr[uid_idx] = row['click_count_norm']
+                self.user_time_span_arr[uid_idx] = row['time_span_norm']
+
+        num_all_items = len(self.item_le.classes_)
+        self.item_cat_arr = np.zeros(num_all_items, dtype=np.int64)
+        self.item_click_arr = np.zeros(num_all_items, dtype=np.float32)
+        self.item_created_arr = np.zeros(num_all_items, dtype=np.float32)
+        for idx in item_features.index:
+            self.item_cat_arr[idx] = int(item_features.loc[idx].get('category_idx', 0))
+            self.item_click_arr[idx] = float(item_features.loc[idx].get('item_click_count_norm', 0))
+            self.item_created_arr[idx] = float(item_features.loc[idx].get('created_at_ts_norm', 0))
 
     def __len__(self):
         return len(self.samples)
 
     def _get_user_data(self, user_idx):
-        hist_items = self.user_hist_dict.get(user_idx, [])
+        hist_items = self.user_hist_arr[user_idx]
+        if hist_items is None:
+            hist_items = []
         hist_len_actual = len(hist_items)
 
         if hist_len_actual < self.hist_len:
@@ -661,39 +690,18 @@ class DINDataset(Dataset):
             padded = hist_items[-self.hist_len:]
             hist_len_actual = self.hist_len
 
-        if self.raw_to_idx is not None:
-            idx_to_raw = {v: k for k, v in self.raw_to_idx.items()}
-            raw_uid = idx_to_raw.get(user_idx)
-        else:
-            raw_uid = self.user_le.inverse_transform([user_idx])[0]
-
-        user_row = self.user_features[self.user_features['user_id'] == raw_uid]
-        if len(user_row) > 0:
-            click_count_norm = user_row.iloc[0]['click_count_norm']
-            time_span_norm = user_row.iloc[0]['time_span_norm']
-        else:
-            click_count_norm = 0.0
-            time_span_norm = 0.0
-
         return {
             'hist_items': torch.LongTensor(padded),
             'hist_len': torch.tensor(hist_len_actual, dtype=torch.long),
-            'click_count': torch.tensor(click_count_norm, dtype=torch.float32),
-            'time_span': torch.tensor(time_span_norm, dtype=torch.float32),
+            'click_count': torch.tensor(self.user_click_cnt_arr[user_idx], dtype=torch.float32),
+            'time_span': torch.tensor(self.user_time_span_arr[user_idx], dtype=torch.float32),
         }
 
     def _get_item_data(self, item_idx):
-        if item_idx in self.item_features.index:
-            row = self.item_features.loc[item_idx]
-            return {
-                'category_id': torch.tensor(int(row.get('category_idx', 0)), dtype=torch.long),
-                'item_click_count': torch.tensor(float(row.get('item_click_count_norm', 0)), dtype=torch.float32),
-                'created_at_ts': torch.tensor(float(row.get('created_at_ts_norm', 0)), dtype=torch.float32),
-            }
         return {
-            'category_id': torch.tensor(0, dtype=torch.long),
-            'item_click_count': torch.tensor(0.0, dtype=torch.float32),
-            'created_at_ts': torch.tensor(0.0, dtype=torch.float32),
+            'category_id': torch.tensor(self.item_cat_arr[item_idx], dtype=torch.long),
+            'item_click_count': torch.tensor(self.item_click_arr[item_idx], dtype=torch.float32),
+            'created_at_ts': torch.tensor(self.item_created_arr[item_idx], dtype=torch.float32),
         }
 
     def __getitem__(self, idx):
