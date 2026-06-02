@@ -22,6 +22,10 @@ env/
 # --- Claude Code ---
 .claude/
 
+# --- 打包文件 ---
+*.tar.gz
+*.zip
+
 # --- 系统文件 ---
 .DS_Store
 Thumbs.db
