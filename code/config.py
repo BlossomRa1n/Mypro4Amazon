@@ -39,6 +39,7 @@ EMBED_DIM = 64
 HIDDEN_DIMS = [256, 128]
 HIST_LEN = 50
 BATCH_SIZE = 1024
+NUM_WORKERS = 8               # DataLoader 线程数 (云服务器 16 vCPU: 8; 本地: 0-2)
 NUM_EPOCHS = 10               # 本地验证: 3; 正式训练: 10+
 LEARNING_RATE = 1e-3
 WEIGHT_DECAY = 1e-5

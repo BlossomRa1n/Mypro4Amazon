@@ -115,7 +115,7 @@ def train():
     )
     dataloader = DataLoader(
         dataset, batch_size=config.BATCH_SIZE, shuffle=True,
-        num_workers=4, collate_fn=collate_fn, persistent_workers=True
+        num_workers=config.NUM_WORKERS, collate_fn=collate_fn, persistent_workers=True
     )
 
     # ================================================================
