@@ -1,0 +1,27 @@
+# --- 数据文件 (绝对不能上传) ---
+amazon_reviews/
+*.csv
+
+# --- 中间缓存文件 (模型、pkl等) ---
+user_data/
+*.pkl
+*.pth
+
+# --- 输出结果 ---
+prediction_result/
+
+# --- Python 编译与环境文件 ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+.idea/
+.vscode/
+
+# --- Claude Code ---
+.claude/
+
+# --- 系统文件 ---
+.DS_Store
+Thumbs.db
