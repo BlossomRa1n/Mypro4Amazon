@@ -281,78 +281,76 @@ def build_extended_item_features(click_df, meta_df, encoders):
     """
     print(">>> Building extended item features...")
     item_le = encoders['item_id']
-    brand_le = encoders['brand_id']
     cat_le = encoders['category_id']
 
-    # --- Build item metadata lookup ---
-    meta = meta_df.copy()
-    meta['item_idx'] = item_le.transform(meta['parent_asin'])
+    num_items = len(item_le.classes_)
+    item_cat_arr = np.zeros(num_items, dtype=np.int64)
+    item_brand_arr = np.zeros(num_items, dtype=np.int64)
+    item_click_arr = np.zeros(num_items, dtype=np.float32)
+    item_created_arr = np.zeros(num_items, dtype=np.float32)
+    item_avg_rating_arr = np.zeros(num_items, dtype=np.float32)
+    item_rating_num_arr = np.zeros(num_items, dtype=np.float32)
 
-    # category
-    meta['category_idx'] = meta['main_category'].apply(
-        lambda x: cat_le.transform([x])[0] if x in cat_le.classes_ else 0
-    )
+    # --- Category (fast: map via dict) ---
+    cat_map = {'__PAD__': 0}
+    for i, cls in enumerate(cat_le.classes_):
+        cat_map[cls] = i
+    meta_cat_series = meta_df['main_category'].map(cat_map).fillna(0).astype(np.int64).values
+    meta_parent_asin = meta_df['parent_asin'].values
 
-    # brand
-    def encode_brand(b):
-        return brand_le.transform([b])[0] if b in brand_le.classes_ else 0
-    meta['brand_idx'] = meta['brand'].apply(encode_brand)
+    # Build parent_asin → item_idx mapping
+    raw_to_item_enc = {cls: i for i, cls in enumerate(item_le.classes_)}
 
-    # created_at_ts (earliest review timestamp per item)
-    ts_by_item = click_df.groupby('click_article_id')['click_timestamp'].min().reset_index()
-    ts_by_item.columns = ['parent_asin', 'created_at_ts']
+    # --- Fill from meta in one pass ---
+    for i in range(len(meta_df)):
+        parent = meta_parent_asin[i]
+        idx = raw_to_item_enc.get(parent, -1)
+        if idx < 0 or idx >= num_items:
+            continue
+        item_cat_arr[idx] = meta_cat_series[i]
+        item_avg_rating_arr[idx] = float(meta_df.iloc[i].get('average_rating', 0) or 0)
+        item_rating_num_arr[idx] = float(meta_df.iloc[i].get('rating_number', 0) or 0)
 
-    # --- Start with all known items ---
-    all_items = pd.DataFrame({
-        'parent_asin': item_le.classes_,
-        'item_idx': range(len(item_le.classes_))
-    })
-    all_items = all_items.merge(meta[['parent_asin', 'category_idx', 'brand_idx',
-                                       'average_rating', 'rating_number']],
-                                on='parent_asin', how='left')
-    all_items = all_items.merge(ts_by_item, on='parent_asin', how='left')
+    # --- Click count + created_at per item ---
+    ts_min = click_df['click_timestamp'].min()
+    ts_max = click_df['click_timestamp'].max()
+    ts_range = ts_max - ts_min + 1e-8
 
-    # click count per item
-    icc = click_df.groupby('click_article_id').size().reset_index(name='item_click_count')
-    icc.columns = ['parent_asin', 'item_click_count']
-    all_items = all_items.merge(icc, on='parent_asin', how='left')
+    click_counts = click_df.groupby('click_article_id').size()
+    click_min = click_counts.min()
+    click_max = click_counts.max()
+    click_range = click_max - click_min + 1e-8
 
-    # --- Normalize ---
-    # created_at_ts
-    ts = all_items['created_at_ts'].astype(float)
-    ts_min, ts_max = ts.min(), ts.max()
-    all_items['created_at_ts_norm'] = ((ts - ts_min) / (ts_max - ts_min + 1e-8)).fillna(0)
+    created_at = click_df.groupby('click_article_id')['click_timestamp'].min()
 
-    # item_click_count
-    icc_val = all_items['item_click_count'].fillna(0).astype(float)
-    all_items['item_click_count_norm'] = ((icc_val - icc_val.min()) /
-                                           (icc_val.max() - icc_val.min() + 1e-8))
+    for raw_id, count_val in click_counts.items():
+        idx = raw_to_item_enc.get(raw_id, -1)
+        if idx < 0 or idx >= num_items:
+            continue
+        item_click_arr[idx] = (count_val - click_min) / click_range
+        ts_val = created_at.get(raw_id, ts_min)
+        item_created_arr[idx] = (ts_val - ts_min) / ts_range
 
-    # average_rating (from meta — global quality signal)
-    ar = all_items['average_rating'].fillna(0).astype(float)
-    all_items['item_avg_rating_norm'] = ar / 5.0  # 0-5 scale → 0-1
+    # --- Normalize meta-derived features ---
+    ar_max = item_avg_rating_arr.max()
+    if ar_max > 0:
+        item_avg_rating_arr = item_avg_rating_arr / ar_max
 
-    # rating_number (from meta — popularity/reliability signal)
-    rn = all_items['rating_number'].fillna(0).astype(float)
-    all_items['item_rating_number_norm'] = np.log1p(rn) / np.log1p(rn.max() + 1e-8)
+    rn_max = item_rating_num_arr.max()
+    if rn_max > 0:
+        item_rating_num_arr = np.log1p(item_rating_num_arr) / np.log1p(rn_max + 1e-8)
 
-    # Fill missing
-    all_items['category_idx'] = all_items['category_idx'].fillna(0).astype(int)
-    all_items['brand_idx'] = all_items['brand_idx'].fillna(0).astype(int)
+    # --- Build final DataFrame ---
+    item_features = pd.DataFrame({
+        'category_idx': item_cat_arr,
+        'brand_idx': item_brand_arr,
+        'item_click_count_norm': item_click_arr,
+        'created_at_ts_norm': item_created_arr,
+        'item_avg_rating_norm': item_avg_rating_arr,
+        'item_rating_number_norm': item_rating_num_arr,
+    }, index=range(num_items))
 
-    # --- Build final feature table ---
-    feature_cols = ['item_idx', 'category_idx', 'brand_idx',
-                    'item_click_count_norm', 'created_at_ts_norm',
-                    'item_avg_rating_norm', 'item_rating_number_norm']
-    item_features = all_items[feature_cols].set_index('item_idx').sort_index()
-
-    # Ensure all indices exist
-    all_idx = pd.DataFrame(index=range(len(item_le.classes_)))
-    item_features = all_idx.join(item_features).fillna(0)
-    for col in ['category_idx', 'brand_idx']:
-        item_features[col] = item_features[col].astype(int)
-
-    print(f">>> Item features: {len(item_features)} items × {len(feature_cols)-1} features")
+    print(f">>> Item features: {len(item_features)} items × 6 features")
     return item_features
 
 
