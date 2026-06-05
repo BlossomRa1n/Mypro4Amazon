@@ -19,22 +19,28 @@ def itemcf_sim(user_item_time_dict):
         # 打压热门物品（Popularity Bias）、提升推荐多样性和长尾物品曝光率
         iuf_weight = 1.0 / math.log(1 + len(item_time_list))
         
+        # 半衰期: 24 小时 (ms), 控制时间衰减速度
+        HALF_LIFE_MS = 24 * 3600 * 1000
+
         for loc1, (i, i_click_time) in enumerate(item_time_list):
             item_cnt[i] += 1
             i2i_sim.setdefault(i, {})
-            
+
             for loc2, (j, j_click_time) in enumerate(item_time_list):
                 if i == j:
                     continue
-                
-                # 2. 位置权重
-                loc_alpha = 1.0 if loc2 > loc1 else 0.7
-                
-                # 【!!! 修正点 !!!】这里必须是 ** (次方)，绝对不能是 * (乘法)
-                loc_weight = loc_alpha * (0.9 ** (abs(loc1 - loc2) - 1))
-                
+
+                # 2. 时间衰减 (替代位置衰减)
+                # 用真实时间戳代替序列位置: 两个 item 交互间隔越短, 权重越高
+                time_diff_ms = abs(i_click_time - j_click_time)
+                time_weight = math.exp(-time_diff_ms / HALF_LIFE_MS)
+
+                # 时间方向: j 在 i 之后 → 权重 1.0; j 在 i 之前 → 0.7
+                # (用户倾向于买与"之前买的"相似的东西)
+                loc_alpha = 1.0 if j_click_time > i_click_time else 0.7
+
                 i2i_sim[i].setdefault(j, 0)
-                i2i_sim[i][j] += iuf_weight * loc_weight
+                i2i_sim[i][j] += iuf_weight * time_weight * loc_alpha
             
     # 3. 归一化
     print(">>> Normalizing...")
@@ -59,15 +65,16 @@ def item_based_recommend(user_id,user_item_time_dict,i2i_sim,sim_item_topk,recal
     item_rank = {}
 
     # 2. 遍历用户看过的每个物品 i
-    # 【优化】考虑用户最近的行为权重更高
-    # 我们用 list 的索引来代表时间远近，loc 越大代表越近
+    # 用真实时间衰减替代位置衰减: 最近的交互权重更高
+    HALF_LIFE_MS = 7 * 24 * 3600 * 1000  # 半衰期 7 天 (近期行为)
     hist_len = len(user_hist_items)
+    last_click_time = user_hist_items[-1][1] if hist_len > 0 else 0  # 最近一次交互时间
+
     for loc,(i,click_time) in enumerate(user_hist_items):
-        # 【新增】近期行为权重 (Time Decay)
-        # 越接近当前(loc 越大)，权重越大。
-        # 0.9 ** (hist_len - 1 - loc)
-        # 例如：总长5。第4个(最新): 0.9^0=1。第0个(最旧): 0.9^4=0.65
-        time_decay = 0.9 ** (hist_len - loc - 1)
+        # 时间衰减: 距离最近一次交互越久, 权重越低
+        time_diff_ms = last_click_time - click_time
+        time_decay = math.exp(-time_diff_ms / HALF_LIFE_MS)
+
         for j,wij in sorted(i2i_sim.get(i,{}).items(),key = lambda x : x[1],reverse= True)[:sim_item_topk]:
             if j in user_hist_set:
                 continue

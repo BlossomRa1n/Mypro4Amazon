@@ -5,6 +5,7 @@ import os
 import torch
 from torch.utils.data import Dataset
 from sklearn.preprocessing import LabelEncoder
+from tqdm import tqdm
 from utils import reduce_mem
 import config
 
@@ -74,6 +75,15 @@ def load_amazon_reviews(data_path, categories, offline=False):
             sampled = np.random.choice(pos_users, size=config.AMAZON_SAMPLE_USERS, replace=False)
             ratings = ratings[ratings['user_id'].isin(sampled)]
             print(f">>> Sampled {config.AMAZON_SAMPLE_USERS} positive users")
+
+    # 可选：只保留交互数≥阈值的稠密用户 (Embedding 需要足够梯度信号)
+    min_inter = getattr(config, 'AMAZON_MIN_USER_INTERACTIONS', None)
+    if min_inter is not None and min_inter > 0:
+        user_pos_counts = ratings[ratings['click_label'] == 1].groupby('user_id').size()
+        dense_users = user_pos_counts[user_pos_counts >= min_inter].index
+        ratings = ratings[ratings['user_id'].isin(dense_users)]
+        print(f">>> Dense user filter: ≥{min_inter} positive interactions → "
+              f"{len(dense_users):,} users retained")
 
     ratings = reduce_mem(ratings)
 
@@ -339,20 +349,32 @@ def build_hard_negative_index(i2i_sim, encoders, num_hard_negatives=4):
     print(">>> Building hard negative index from ItemCF similarity...")
     item_le = encoders['item_id']
 
+    # 预建 raw→idx 映射 (O(1) 替代 transform() 的 O(N) 扫)
+    raw_to_enc = {cls: i for i, cls in enumerate(item_le.classes_)}
+    import heapq
+
     hard_neg_index = {}
-    for raw_item, sim_items in i2i_sim.items():
-        if raw_item not in item_le.classes_:
+    for raw_item, sim_items in tqdm(i2i_sim.items(), desc="HardNeg Index"):
+        if raw_item not in raw_to_enc:
             continue
-        item_idx = item_le.transform([raw_item])[0]
-        sorted_sims = sorted(sim_items.items(), key=lambda x: -x[1])
+        item_idx = raw_to_enc[raw_item]
+
+        # heapq.nlargest 取 Top-K, 比全量 sorted() 快 10-50 倍
+        import heapq
+        top_k = heapq.nlargest(
+            num_hard_negatives * 3, sim_items.items(),
+            key=lambda x: x[1]
+        )
         hard_negs = []
-        for sim_item, sim_score in sorted_sims[:num_hard_negatives * 3]:
-            if sim_item in item_le.classes_:
-                hard_negs.append(item_le.transform([sim_item])[0])
+        for sim_item, _ in top_k:
+            enc = raw_to_enc.get(sim_item)
+            if enc is not None:
+                hard_negs.append(enc)
             if len(hard_negs) >= num_hard_negatives:
                 break
         hard_neg_index[item_idx] = hard_negs
 
+    print(f">>> Built hard negative index for {len(hard_neg_index):,} items")
     return hard_neg_index
 
 
@@ -604,9 +626,9 @@ class TwoTowerV2Dataset(Dataset):
 
 
 class DINDataset(Dataset):
-    """DIN 精排数据集: 正样本 (4-5分) + 显式负样本 (1-2分) + 随机负样本"""
+    """DIN 精排数据集 (BPR pairwise): 每样本 = (用户, 正样本item, 负样本item)"""
     def __init__(self, click_df, user_features, item_features, encoders,
-                 hist_len=50, neg_ratio=4):
+                 hist_len=50, neg_ratio=4, hard_neg_index=None, num_hard_negatives=4):
         self.user_le = encoders['user_id']
         self.item_le = encoders['item_id']
         self.raw_to_idx = encoders.get('raw_to_idx', None)
@@ -619,30 +641,63 @@ class DINDataset(Dataset):
         neg_df = click_df[click_df['click_label'] == 0]
         user_pos_items = pos_df.groupby('user_idx')['item_idx'].apply(set).to_dict()
 
-        self.samples = []  # (user_idx, item_idx, label, weight)
-        # 正样本 (4-5分, 按评分强度加权)
-        for _, row in pos_df.iterrows():
-            self.samples.append((row['user_idx'], row['item_idx'], 1.0, row['click_weight']))
-        # 显式负样本 (1-2分)
-        for _, row in neg_df.iterrows():
-            self.samples.append((row['user_idx'], row['item_idx'], 0.0, row['click_weight']))
-        # 随机负样本 (每正样本配 neg_ratio 个)
-        neg_count = len(pos_df) * neg_ratio
-        rng = np.random.default_rng(42)
-        while neg_count > 0:
-            rand_uidx = rng.integers(0, len(self.user_le.classes_), size=min(neg_count, 50000))
-            rand_iidx = rng.integers(1, len(self.item_le.classes_), size=min(neg_count, 50000))
-            for u, i in zip(rand_uidx, rand_iidx):
-                pos_set = user_pos_items.get(u, set())
-                if i not in pos_set:
-                    self.samples.append((u, i, 0.0, 0.5))
-                    neg_count -= 1
-                    if neg_count <= 0:
-                        break
+        # 先建 user history 字典
+        uid_to_hist = {}
+        for _, row in user_features.iterrows():
+            raw_uid = row['user_id']
+            if self.raw_to_idx is not None:
+                uid_idx = self.raw_to_idx.get(raw_uid)
+            elif raw_uid in self.user_le.classes_:
+                uid_idx = self.user_le.transform([raw_uid])[0]
+            else:
+                uid_idx = None
+            if uid_idx is not None:
+                uid_to_hist[uid_idx] = row['hist_items_trunc']
 
+        # 构建负样本池: 显式负样本 (1-2分) → list of (uid, iid)
+        explicit_negs = []
+        for _, row in neg_df.iterrows():
+            explicit_negs.append((row['user_idx'], row['item_idx']))
+
+        # BPR pairwise 样本: (uid, pos_iid, neg_iid)
+        self.pairs = []
+        rng = np.random.default_rng(42)
+
+        # 每个正样本配 neg_ratio 个负样本
+        for _, row in pos_df.iterrows():
+            uid = row['user_idx']
+            pos_iid = row['item_idx']
+            pos_set = user_pos_items.get(uid, set())
+            hist = uid_to_hist.get(uid, [])
+
+            # 收集该用户的所有负样本候选
+            neg_candidates = []
+
+            # 1) Hard negatives: ItemCF 相似但未点击
+            if hard_neg_index is not None and hist:
+                seen_hn = set()
+                for h in hist:
+                    if h > 0 and h in hard_neg_index:
+                        for hn in hard_neg_index[h][:num_hard_negatives]:
+                            if hn not in seen_hn and hn not in pos_set:
+                                seen_hn.add(hn)
+                                neg_candidates.append(hn)
+
+            # 2) 不够补随机
+            while len(neg_candidates) < neg_ratio * 3:
+                r = rng.integers(1, len(self.item_le.classes_))
+                if r not in pos_set:
+                    neg_candidates.append(r)
+
+            # 打乱取 neg_ratio 个
+            rng.shuffle(neg_candidates)
+            for neg_iid in neg_candidates[:neg_ratio]:
+                self.pairs.append((uid, pos_iid, int(neg_iid)))
+
+        print(f">>> DINDataset pairwise: {len(self.pairs):,} pairs")
         self.hist_len = hist_len
 
-        # --- 预构建数组 (只做一次，__getitem__ 纯数组下标) ---
+        # --- 预构建数组 ---
         if self.raw_to_idx is not None:
             self.idx_to_raw = {v: k for k, v in self.raw_to_idx.items()}
         else:
@@ -676,7 +731,7 @@ class DINDataset(Dataset):
             self.item_created_arr[idx] = float(item_features.loc[idx].get('created_at_ts_norm', 0))
 
     def __len__(self):
-        return len(self.samples)
+        return len(self.pairs)
 
     def _get_user_data(self, user_idx):
         hist_items = self.user_hist_arr[user_idx]
@@ -705,10 +760,11 @@ class DINDataset(Dataset):
         }
 
     def __getitem__(self, idx):
-        user_idx, item_idx, label, weight = self.samples[idx]
+        user_idx, pos_item_idx, neg_item_idx = self.pairs[idx]
 
         user_data = self._get_user_data(user_idx)
-        item_data = self._get_item_data(item_idx)
+        pos_data = self._get_item_data(pos_item_idx)
+        neg_data = self._get_item_data(neg_item_idx)
 
         return {
             'user_id': torch.tensor(user_idx, dtype=torch.long),
@@ -716,10 +772,14 @@ class DINDataset(Dataset):
             'hist_len': user_data['hist_len'],
             'click_count': user_data['click_count'],
             'time_span': user_data['time_span'],
-            'item_id': torch.tensor(item_idx, dtype=torch.long),
-            'category_id': item_data['category_id'],
-            'item_click_count': item_data['item_click_count'],
-            'created_at_ts': item_data['created_at_ts'],
-            'label': torch.tensor(label, dtype=torch.float32),
-            'click_weight': torch.tensor(weight, dtype=torch.float32),
+
+            'pos_item_id': torch.tensor(pos_item_idx, dtype=torch.long),
+            'pos_category_id': pos_data['category_id'],
+            'pos_item_click_count': pos_data['item_click_count'],
+            'pos_created_at_ts': pos_data['created_at_ts'],
+
+            'neg_item_id': torch.tensor(neg_item_idx, dtype=torch.long),
+            'neg_category_id': neg_data['category_id'],
+            'neg_item_click_count': neg_data['item_click_count'],
+            'neg_created_at_ts': neg_data['created_at_ts'],
         }

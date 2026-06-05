@@ -28,17 +28,19 @@ def collate_fn(batch):
     return result
 
 
-def _save_checkpoint(model, optimizer, scheduler, model_cfg, filepath, epoch, metrics, best_auc, patience):
-    torch.save({
+def _save_checkpoint(model, optimizer, scheduler, model_cfg, filepath, epoch, metrics, best_auc, patience, save_optimizer=True):
+    data = {
         'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict(),
         'config': model_cfg,
         'epoch': epoch,
         'metrics': metrics,
         'best_auc': best_auc,
         'patience_counter': patience,
-    }, filepath)
+    }
+    if save_optimizer:
+        data['optimizer_state_dict'] = optimizer.state_dict()
+        data['scheduler_state_dict'] = scheduler.state_dict()
+    torch.save(data, filepath)
 
 
 def _find_latest_checkpoint(prefix):
@@ -60,8 +62,10 @@ def _load_checkpoint(filepath, model_class, optimizer, scheduler, device):
     model_cfg = ckpt['config']
     model = model_class(**model_cfg).to(device)
     model.load_state_dict(ckpt['model_state_dict'])
-    optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-    scheduler.load_state_dict(ckpt.get('scheduler_state_dict', {}))
+    if 'optimizer_state_dict' in ckpt:
+        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+    if 'scheduler_state_dict' in ckpt:
+        scheduler.load_state_dict(ckpt['scheduler_state_dict'])
     return model, model_cfg, ckpt.get('epoch', 0), ckpt.get('best_auc', 0.5), ckpt.get('patience_counter', 0), ckpt.get('metrics', {})
 
 
@@ -94,12 +98,27 @@ def train():
     user_features = build_user_features(get_positive_click_df(train_click), encoders, hist_len=config.HIST_LEN)
 
     # ================================================================
-    # Step 3: 构建 DIN Dataset (pointwise, 仅训练集)
+    # Step 3: 加载 ItemCF → Hard Negative Index → 构建 DIN Dataset
     # ================================================================
-    print("\nStep 3: Building DIN dataset (pointwise)...")
+    print("\nStep 3: Loading ItemCF for hard negative mining...")
+    hard_neg_index = None
+    if os.path.exists(config.ITEMCF_SIM_PKL):
+        import pickle
+        from data_loader import build_hard_negative_index
+        with open(config.ITEMCF_SIM_PKL, 'rb') as f:
+            i2i_sim = pickle.load(f)
+        hard_neg_index = build_hard_negative_index(
+            i2i_sim, encoders, num_hard_negatives=4
+        )
+        print(f">>> Loaded ItemCF hard negatives for {len(hard_neg_index)} items")
+    else:
+        print(">>> No ItemCF cache found, using random negatives for DIN")
+
+    print("Building DIN dataset (pointwise)...")
     dataset = DINDataset(
         train_click, user_features, item_features, encoders,
-        hist_len=config.HIST_LEN, neg_ratio=4
+        hist_len=config.HIST_LEN, neg_ratio=4,
+        hard_neg_index=hard_neg_index, num_hard_negatives=4
     )
     print(f">>> DIN dataset size: {len(dataset)}")
     dataloader = DataLoader(
@@ -124,6 +143,20 @@ def train():
     total_params = sum(p.numel() for p in model.parameters())
     print(f">>> Total parameters: {total_params:,}")
 
+    # ---- ALS 预训练初始化 (BPR/V2 有, DIN 也得有) ----
+    if getattr(config, 'USE_ALS_INIT', False):
+        from als_init import init_model_with_als
+        pos_click = get_positive_click_df(click_df)
+        model, als_ok = init_model_with_als(
+            model, pos_click, encoders['user_id'], encoders['item_id'],
+            fix_embeddings=getattr(config, 'ALS_FIX_EMBEDDINGS', False)
+        )
+        if als_ok:
+            print(">>> ALS pre-training loaded — DIN starts from collaborative-filtering quality")
+        else:
+            print(">>> ALS unavailable for DIN, falling back to random init")
+    # ----------------------------------
+
     optimizer = optim.Adam(model.parameters(), lr=config.DIN_LEARNING_RATE, weight_decay=config.DIN_WEIGHT_DECAY)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.5)
 
@@ -133,7 +166,10 @@ def train():
     # ---- Resume ----
     start_epoch, best_auc, patience_counter = 0, 0.5, 0
     history = []
-    resume_path = _find_latest_checkpoint('din')
+    # ---- Resume (优先含优化器的 latest.pth, 回退到 epoch checkpoint) ----
+    resume_path = os.path.join(config.MODEL_PATH, 'din_latest.pth')
+    if not os.path.exists(resume_path):
+        resume_path = _find_latest_checkpoint('din')
     if resume_path:
         model, model_cfg, start_epoch, best_auc, patience_counter, prev_metrics = \
             _load_checkpoint(resume_path, DINModel, optimizer, scheduler, device)
@@ -153,18 +189,22 @@ def train():
         # ---- 训练 ----
         model.train()
         total_loss = 0.0
-        total_correct = 0
-        total_samples = 0
         num_batches = 0
 
         pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{config.DIN_NUM_EPOCHS}")
         for batch in pbar:
             batch = {k: v.to(device) for k, v in batch.items()}
-            labels = batch.pop('label')
 
-            logits = model(batch)
-            loss = model.compute_loss(logits, labels,
-                                      click_weight=batch.get('click_weight'))
+            # BPR pairwise: 拆分 user / pos / neg
+            user_keys = ['user_id', 'hist_items', 'hist_len', 'click_count', 'time_span']
+            user_batch = {k: batch[k] for k in user_keys}
+            pos_batch = {k.replace('pos_', 'item_'): batch[f'pos_{k}']
+                         for k in ['item_id','category_id','item_click_count','created_at_ts']}
+            neg_batch = {k.replace('neg_', 'item_'): batch[f'neg_{k}']
+                         for k in ['item_id','category_id','item_click_count','created_at_ts']}
+
+            pos_score, neg_score = model.forward_pairwise(user_batch, pos_batch, neg_batch)
+            loss = model.compute_bpr_loss(pos_score, neg_score)
 
             optimizer.zero_grad()
             loss.backward()
@@ -174,17 +214,14 @@ def train():
             total_loss += loss.item()
             num_batches += 1
 
-            preds = (torch.sigmoid(logits) > 0.5).float()
-            total_correct += (preds == labels).sum().item()
-            total_samples += labels.size(0)
-
-            pbar.set_postfix(loss=f"{loss.item():.4f}", acc=f"{total_correct/total_samples:.4f}")
+            # BPR 准确率: 正样本分数 > 负样本分数的比例
+            correct = (pos_score > neg_score).float().mean().item()
+            pbar.set_postfix(loss=f"{loss.item():.4f}", acc=f"{correct:.4f}")
 
         scheduler.step()
         train_loss = total_loss / max(num_batches, 1)
-        train_acc = total_correct / max(total_samples, 1)
         print(f"Epoch {epoch+1}/{config.DIN_NUM_EPOCHS} | "
-              f"Train Loss={train_loss:.4f} | Train Acc={train_acc:.4f}")
+              f"Train Loss={train_loss:.4f}")
 
         # ---- 验证 ----
         if config.SKIP_EVAL:
@@ -202,15 +239,21 @@ def train():
               f"Users={metrics['n_users']}")
 
         history.append({'epoch': epoch + 1, 'train_loss': train_loss,
-                        'train_acc': train_acc, 'val_auc': auc, 'val_pos_mean': pos_mean})
+                        'val_auc': auc, 'val_pos_mean': pos_mean})
 
-        # ---- 每 epoch 存档 ----
+        # ---- 每 epoch 存档 (仅权重, 不存优化器以节省磁盘) ----
         epoch_path = os.path.join(config.CHECKPOINT_DIR, f'din_epoch{epoch+1:02d}.pth')
         _save_checkpoint(model, optimizer, scheduler, model_cfg,
-                        epoch_path, epoch + 1, metrics, best_auc, patience_counter)
-        print(f"  → Saved: {epoch_path}")
+                        epoch_path, epoch + 1, metrics, best_auc, patience_counter,
+                        save_optimizer=False)
 
-        # ---- 更新最佳 (本地验证模式直接保存最新) ----
+        # ---- 更新最新存档 (含优化器, 用于断点恢复) ----
+        latest_path = os.path.join(config.MODEL_PATH, 'din_latest.pth')
+        _save_checkpoint(model, optimizer, scheduler, model_cfg,
+                        latest_path, epoch + 1, metrics, best_auc, patience_counter,
+                        save_optimizer=True)
+
+        # ---- 更新最佳 (基于 AUC) ----
         is_better = config.SKIP_EVAL or auc > best_auc
         if is_better:
             best_auc = auc
@@ -218,7 +261,8 @@ def train():
             patience_counter = 0
             best_path = os.path.join(config.MODEL_PATH, 'din_best.pth')
             _save_checkpoint(model, optimizer, scheduler, model_cfg,
-                            best_path, epoch + 1, metrics, best_auc, patience_counter)
+                            best_path, epoch + 1, metrics, best_auc, patience_counter,
+                            save_optimizer=True)
             print(f"  ★ New best! AUC={auc:.4f}")
         else:
             patience_counter += 1

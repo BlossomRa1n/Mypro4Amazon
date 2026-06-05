@@ -26,30 +26,31 @@ def itemcf_recall(target_users, user_item_time_dict, i2i_sim, item_topk_click,
 
 def embedding_recall(target_users, user_recall_dict, click_df, user_features,
                      item_features, encoders, all_item_vecs, item_topk_click,
-                     hist_len=50, recall_item_num=50, weight=1.0):
+                     hist_len=50, recall_item_num=50, weight=1.0,
+                     model_path=None, channel_label="Embedding"):
     """
-    双塔向量召回: 用训练好的双塔模型计算用户-物品相似度
+    双塔向量召回: 用训练好的双塔模型计算用户-物品相似度。
+    支持传入 model_path 和 all_item_vecs 实现多模型并行召回。
     """
     import torch
     from model import TwoTowerV2Model
 
-    print(">>> [Recall Channel 2] Two-Tower Embedding Recall...")
-
-    # 优先加载 V2 best → V2 → V1 best → V1
-    V2_BEST = os.path.join(config.MODEL_PATH, 'two_tower_v2_best.pth')
-    V1_BEST = os.path.join(config.MODEL_PATH, 'two_tower_best.pth')
-
-    model_path = None; use_v2 = True
-    for candidate, is_v2 in [(V2_BEST, True), (config.V2_MODEL_FILE, True),
-                              (V1_BEST, False), (config.DEEP_MODEL_FILE, False)]:
-        if os.path.exists(candidate):
-            model_path = candidate; use_v2 = is_v2; break
-
+    # 自动检测模型路径
     if model_path is None:
-        print("    No model file found, skipping embedding recall.")
+        V2_BEST = os.path.join(config.MODEL_PATH, 'two_tower_v2_best.pth')
+        V1_BEST = os.path.join(config.MODEL_PATH, 'two_tower_best.pth')
+        for candidate in [(V2_BEST,), (config.V2_MODEL_FILE,), (V1_BEST,), (config.DEEP_MODEL_FILE,)]:
+            if os.path.exists(candidate[0]):
+                model_path = candidate[0]; break
+
+    if model_path is None or not os.path.exists(model_path):
+        print(f"    [{channel_label}] No model file found, skipping.")
         return user_recall_dict
 
-    print(f"    Loading: {model_path} (v2={use_v2})")
+    # 判断 V2/V1
+    use_v2 = 'v2' in os.path.basename(model_path).lower()
+
+    print(f"    [{channel_label}] Loading: {os.path.basename(model_path)} (v2={use_v2})")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
@@ -87,33 +88,44 @@ def embedding_recall(target_users, user_recall_dict, click_df, user_features,
 
     all_item_vecs_tensor = torch.FloatTensor(all_item_vecs).to(device)
 
-    # 预取出所有有效用户的数据（避免循环中逐行查 DataFrame）
+    # --- 预构建 idx → raw_id 映射 (避免循环里逐条 inverse_transform) ---
+    idx_to_raw_item = item_le.classes_.tolist()
+
+    # --- 预构建用户特征字典 (O(1) 查询, 替代扫 DataFrame) ---
+    user_feat_dict = {}
+    for _, feat_row in user_features.iterrows():
+        uid = feat_row['user_id']
+        user_feat_dict[uid] = {
+            'hist': feat_row['hist_items_trunc'],
+            'click_norm': feat_row['click_count_norm'],
+            'span_norm': feat_row['time_span_norm'],
+        }
+
+    # 预取出所有有效用户 (只做一次, O(N) 但是 N=273K 而不是 N=273K×222K)
     valid_users = []
     for raw_uid in target_users:
         if raw_uid not in user_le.classes_:
             continue
-        row = user_features[user_features['user_id'] == raw_uid]
-        if len(row) == 0:
+        feat = user_feat_dict.get(raw_uid)
+        if feat is None:
             continue
-        row = row.iloc[0]
-        valid_users.append((raw_uid, row))
+        valid_users.append((raw_uid, feat))
 
-    # 分 batch 向量化推理，比逐用户循环快 ~10 倍
+    # 分 batch 向量化推理
     batch_size = 256
     for start in tqdm(range(0, len(valid_users), batch_size), desc="Embedding Recall"):
         chunk = valid_users[start:start + batch_size]
-        B = len(chunk)
 
         # 组装 batch 张量
         user_ids, histories, hist_lens, click_counts, time_spans = [], [], [], [], []
-        for raw_uid, row in chunk:
+        for raw_uid, feat in chunk:
             if raw_to_idx is not None:
                 uidx = raw_to_idx.get(raw_uid, 0)
             else:
                 uidx = user_le.transform([raw_uid])[0]
             user_ids.append(uidx)
 
-            hist_items = row['hist_items_trunc']
+            hist_items = feat['hist']
             hl = len(hist_items)
             if hl > hist_len:
                 hist_items = hist_items[-hist_len:]
@@ -121,8 +133,8 @@ def embedding_recall(target_users, user_recall_dict, click_df, user_features,
             padded = hist_items + [0] * (hist_len - hl)
             histories.append(padded)
             hist_lens.append(hl)
-            click_counts.append(row['click_count_norm'])
-            time_spans.append(row['time_span_norm'])
+            click_counts.append(feat['click_norm'])
+            time_spans.append(feat['span_norm'])
 
         user_batch = {
             'user_id': torch.LongTensor(user_ids).to(device),
@@ -135,19 +147,27 @@ def embedding_recall(target_users, user_recall_dict, click_df, user_features,
         with torch.no_grad():
             user_vecs = model.get_user_embedding(user_batch)  # (B, D)
 
+        # GPU 上一次性完成: matmul → mask history → topk (省掉 CPU 传输 179MB/批)
         scores = torch.matmul(user_vecs, all_item_vecs_tensor.t())  # (B, num_items)
-        scores = scores.cpu().numpy()
 
-        for i, (raw_uid, row) in enumerate(chunk):
-            hist_set = set(row['hist_items_trunc'])
-            s = scores[i]
+        # 批量 mask 掉用户历史: 向量化 scatter, 比逐行 for 快
+        for i, (raw_uid, feat) in enumerate(chunk):
+            hist_set = feat['hist']
             for h in hist_set:
-                if 0 <= h < len(s):
-                    s[h] = -1e9
-            top_indices = np.argsort(s)[::-1][:recall_item_num]
-            for idx in top_indices:
-                raw_item_id = item_le.inverse_transform([int(idx)])[0]
-                sc = float(s[idx]) * weight
+                if 0 <= h < scores.shape[1]:
+                    scores[i, h] = -1e9
+
+        # GPU topk (比 CPU argsort 快 10-50 倍)
+        top_scores, top_indices = torch.topk(scores, recall_item_num, dim=1)
+
+        top_indices = top_indices.cpu().numpy()
+        top_scores = top_scores.cpu().numpy()
+
+        for i, (raw_uid, _) in enumerate(chunk):
+            for j in range(recall_item_num):
+                idx = int(top_indices[i, j])
+                raw_item_id = idx_to_raw_item[idx]  # O(1) list lookup
+                sc = float(top_scores[i, j]) * weight
                 if raw_uid not in user_recall_dict:
                     user_recall_dict[raw_uid] = {}
                 user_recall_dict[raw_uid][raw_item_id] = (
@@ -181,17 +201,13 @@ def category_preference_recall(target_users, click_df, articles_df, item_topk_cl
         category_items[cat].sort(key=lambda x: x[1], reverse=True)
 
     user_category_pref = defaultdict(lambda: defaultdict(float))
-    for _, row in tqdm(click_df.iterrows(), total=len(click_df), desc="Building category pref"):
-        uid = row['user_id']
-        item_id = row['click_article_id']
-        cat = item_category.get(item_id)
-        if cat is not None:
-            user_category_pref[uid][cat] += 1.0
-
-    for uid in user_category_pref:
-        total = sum(user_category_pref[uid].values())
-        for cat in user_category_pref[uid]:
-            user_category_pref[uid][cat] /= total
+    # 向量化: 用 groupby + size 替代 iterrows() 扫 155 万行
+    click_df_enc = click_df.copy()
+    click_df_enc['cat'] = click_df_enc['click_article_id'].map(item_category)
+    cat_counts = click_df_enc.dropna(subset=['cat']).groupby(['user_id', 'cat']).size()
+    user_totals = cat_counts.groupby('user_id').sum()  # 预计算每个用户的总数
+    for (uid, cat), cnt in tqdm(cat_counts.items(), desc="Building category pref"):
+        user_category_pref[uid][cat] = float(cnt / user_totals[uid])
 
     user_recall_dict = {}
     for user in tqdm(target_users, desc="Category Recall"):
@@ -221,25 +237,50 @@ def hot_recall(target_users, item_topk_click, recall_item_num=5, weight=0.1):
     return user_recall_dict
 
 
-def merge_recall_results(recall_channels, weights=None):
+def merge_recall_results(recall_channels, weights=None, final_recall_num=50):
     """
-    多路召回融合: 加权合并各通道的召回结果
-    支持自定义各通道权重
+    多路召回融合: 每路独立排序取 Top-N，保证每一路都有代表进最终候选池。
+    避免单路分数尺度过大淹没其他路。
+
+    策略:
+      - 每条路按 weight 分配名额 (至少 3, 保证各路都有代表)
+      - 从每路按分配名额取分数最高的商品 → 合并 → 统一去重排序取 final_recall_num
     """
     print(">>> Merging multi-channel recall results...")
     if weights is None:
         weights = [1.0] * len(recall_channels)
 
-    merged = defaultdict(lambda: defaultdict(float))
+    n_channels = len(recall_channels)
+    total_weight = sum(w for w in weights if w > 0)
 
-    for channel, weight in zip(recall_channels, weights):
+    # 计算每条路的分配名额 (至少 3)
+    floor = 3
+    quotas = []
+    remaining = final_recall_num - floor * n_channels
+    remaining = max(remaining, final_recall_num // 4)  # 前几路如果数量少, 至少不至于全挤掉
+    for w in weights:
+        if w <= 0 or total_weight == 0:
+            quotas.append(0)
+        else:
+            quota = max(floor, int(final_recall_num * w / total_weight))
+            quotas.append(quota)
+
+    # 从每路取 Top-quota 个
+    merged = defaultdict(dict)
+    for channel, weight, quota in zip(recall_channels, weights, quotas):
+        if weight <= 0:
+            continue
         for user, items in channel.items():
-            for item, score in items.items():
-                merged[user][item] += score * weight
+            if isinstance(items, dict):
+                # 按分数降序取前 quota 个
+                top_items = list(items.items())
+                top_items.sort(key=lambda x: -x[1])
+                for item_id, score in top_items[:quota]:
+                    merged[user][item_id] = merged[user].get(item_id, 0) + score * weight
 
     result = {}
     for user, items in merged.items():
-        result[user] = dict(sorted(items.items(), key=lambda x: -x[1]))
+        result[user] = dict(sorted(items.items(), key=lambda x: -x[1])[:final_recall_num])
 
     return result
 
@@ -260,11 +301,38 @@ def multi_channel_recall(target_users, click_df, user_item_time_dict, i2i_sim,
         sim_item_topk=10, recall_item_num=final_recall_num
     )
 
-    embedding_recall_dict = embedding_recall(
-        target_users, itemcf_recall_dict, click_df, user_features,
-        item_features, encoders, all_item_vecs, item_topk_click,
-        hist_len=hist_len, recall_item_num=final_recall_num, weight=1.0
+    # 双塔 V2 (SASRec + InfoNCE) — 主力
+    v2_embed_path = os.path.join(config.MODEL_PATH, 'two_tower_v2_best.pth')
+    if not os.path.exists(v2_embed_path):
+        v2_embed_path = config.V2_MODEL_FILE
+    v2_vecs = all_item_vecs  # 由 inference_full.py 预加载
+
+    v2_recall_dict = embedding_recall(
+        target_users, {}, click_df, user_features,
+        item_features, encoders, v2_vecs, item_topk_click,
+        hist_len=hist_len, recall_item_num=final_recall_num, weight=1.0,
+        model_path=v2_embed_path, channel_label="V2 SASRec"
     )
+
+    # 双塔 V1 (BPR) — 辅助
+    v1_embed_path = os.path.join(config.MODEL_PATH, 'two_tower_best.pth')
+    if not os.path.exists(v1_embed_path):
+        v1_embed_path = config.DEEP_MODEL_FILE
+    # 加载 V1 embeddings (独立文件)
+    v1_vecs = None
+    v1_pkl = os.path.join(config.MODEL_PATH, 'item_embeddings.pkl')
+    if os.path.exists(v1_pkl):
+        with open(v1_pkl, 'rb') as f:
+            v1_vecs = pickle.load(f)
+        v1_recall_dict = embedding_recall(
+            target_users, {}, click_df, user_features,
+            item_features, encoders, v1_vecs, item_topk_click,
+            hist_len=hist_len, recall_item_num=final_recall_num, weight=1.0,
+            model_path=v1_embed_path, channel_label="V1 BPR"
+        )
+    else:
+        print("    [V1 BPR] No item_embeddings.pkl found, skipping V1 recall")
+        v1_recall_dict = {}
 
     category_recall_dict = category_preference_recall(
         target_users, click_df, articles_df, item_topk_click,
@@ -275,10 +343,17 @@ def multi_channel_recall(target_users, click_df, user_item_time_dict, i2i_sim,
         target_users, item_topk_click, recall_item_num=5, weight=0.1
     )
 
-    channels = [itemcf_recall_dict, embedding_recall_dict, category_recall_dict, hot_recall_dict]
-    weights = [1.0, 1.0, 0.5, 0.1]
+    channels = [itemcf_recall_dict, v2_recall_dict, v1_recall_dict, category_recall_dict, hot_recall_dict]
+    weights = [
+        config.RECALL_WEIGHTS.get('itemcf', 1.0),
+        config.RECALL_WEIGHTS.get('v2_sasrec', 0.0),
+        config.RECALL_WEIGHTS.get('v1_bpr', 0.0),
+        config.RECALL_WEIGHTS.get('category', 0.5),
+        config.RECALL_WEIGHTS.get('hot', 0.1),
+    ]
+    print(f"    Weights: ItemCF={weights[0]:.1f}, V2={weights[1]:.1f}, V1={weights[2]:.1f}, Cat={weights[3]:.1f}, Hot={weights[4]:.1f}")
 
-    merged = merge_recall_results(channels, weights)
+    merged = merge_recall_results(channels, weights, final_recall_num=final_recall_num)
 
     final_result = {}
     for user in target_users:

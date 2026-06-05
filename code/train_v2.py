@@ -18,7 +18,7 @@ from data_loader import (
     TwoTowerV2Dataset
 )
 from model import TwoTowerV2Model
-from evaluate import split_train_val, evaluate_two_tower, compute_item_embeddings
+from evaluate import split_train_val, evaluate_two_tower, evaluate_two_tower_sampled, compute_item_embeddings
 
 
 def collate_fn(batch):
@@ -29,18 +29,20 @@ def collate_fn(batch):
     return result
 
 
-def _save_checkpoint(model, optimizer, scheduler, scaler, model_cfg, filepath, epoch, metrics, best_recall, patience):
-    torch.save({
+def _save_checkpoint(model, optimizer, scheduler, scaler, model_cfg, filepath, epoch, metrics, best_ndcg, patience, save_optimizer=True):
+    data = {
         'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict(),
-        'scaler_state_dict': scaler.state_dict() if scaler else None,
         'config': model_cfg,
         'epoch': epoch,
         'metrics': metrics,
-        'best_recall': best_recall,
+        'best_ndcg': best_ndcg,
         'patience_counter': patience,
-    }, filepath)
+    }
+    if save_optimizer:
+        data['optimizer_state_dict'] = optimizer.state_dict()
+        data['scheduler_state_dict'] = scheduler.state_dict()
+        data['scaler_state_dict'] = scaler.state_dict() if scaler else None
+    torch.save(data, filepath)
 
 
 def _find_latest_checkpoint(prefix):
@@ -62,19 +64,21 @@ def _find_latest_checkpoint(prefix):
 
 
 def _load_checkpoint(filepath, model_class, optimizer, scheduler, device):
-    """加载存档，恢复模型/优化器/scheduler 状态"""
+    """加载存档，恢复模型/优化器/scheduler 状态 (优化器可选, 仅权重存档时不报错)"""
     ckpt = torch.load(filepath, map_location=device, weights_only=False)
     model_cfg = ckpt['config']
     model = model_class(**model_cfg).to(device)
     model.load_state_dict(ckpt['model_state_dict'])
-    optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-    scheduler.load_state_dict(ckpt.get('scheduler_state_dict', {}))
+    if 'optimizer_state_dict' in ckpt:
+        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+    if 'scheduler_state_dict' in ckpt:
+        scheduler.load_state_dict(ckpt['scheduler_state_dict'])
     start_epoch = ckpt.get('epoch', 0)
-    best_recall = ckpt.get('best_recall', 0.0)
+    best_ndcg = ckpt.get('best_ndcg', 0.0)
     patience_counter = ckpt.get('patience_counter', 0)
     metrics = ckpt.get('metrics', {})
     scaler_state = ckpt.get('scaler_state_dict')
-    return model, model_cfg, start_epoch, best_recall, patience_counter, metrics, scaler_state
+    return model, model_cfg, start_epoch, best_ndcg, patience_counter, metrics, scaler_state
 
 
 def train():
@@ -148,6 +152,20 @@ def train():
     total_params = sum(p.numel() for p in model.parameters())
     print(f">>> Total parameters: {total_params:,}")
 
+    # ---- ALS 预训练初始化 (如果有) ----
+    if getattr(config, 'USE_ALS_INIT', False):
+        from als_init import init_model_with_als
+        pos_click = get_positive_click_df(click_df)
+        model, als_ok = init_model_with_als(
+            model, pos_click, encoders['user_id'], encoders['item_id'],
+            fix_embeddings=getattr(config, 'ALS_FIX_EMBEDDINGS', False)
+        )
+        if als_ok:
+            print(">>> ALS pre-training loaded — InfoNCE training starts from collaborative-filtering quality")
+        else:
+            print(">>> ALS unavailable, falling back to random init")
+    # ----------------------------------
+
     optimizer = optim.AdamW(model.parameters(), lr=config.V2_LEARNING_RATE, weight_decay=config.WEIGHT_DECAY)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.V2_NUM_EPOCHS, eta_min=1e-6)
     scaler = torch.cuda.amp.GradScaler() if config.USE_AMP else None
@@ -157,17 +175,20 @@ def train():
 
     # ---- Resume: 自动检测最新 checkpoint 并恢复训练 ----
     start_epoch = 0
-    best_recall = 0.0
+    best_ndcg = 0.0
     patience_counter = 0
     history = []
-    resume_path = _find_latest_checkpoint('two_tower_v2')
+    # ---- Resume (优先含优化器的 latest.pth, 回退到 epoch checkpoint) ----
+    resume_path = os.path.join(config.MODEL_PATH, 'two_tower_v2_latest.pth')
+    if not os.path.exists(resume_path):
+        resume_path = _find_latest_checkpoint('two_tower_v2')
     if resume_path:
-        model, model_cfg, start_epoch, best_recall, patience_counter, prev_metrics, scaler_state = \
+        model, model_cfg, start_epoch, best_ndcg, patience_counter, prev_metrics, scaler_state = \
             _load_checkpoint(resume_path, TwoTowerV2Model, optimizer, scheduler, device)
         # 恢复 AMP scaler
         if scaler is not None and scaler_state is not None:
             scaler.load_state_dict(scaler_state)
-        print(f">>> Resumed from epoch {start_epoch}, best HR@{config.EVAL_K}={best_recall:.4f}, "
+        print(f">>> Resumed from epoch {start_epoch}, best NDCG@{config.EVAL_K}={best_ndcg:.4f}, "
               f"patience={patience_counter}")
         # 从 history.json 恢复历史记录
         history_path = os.path.join(config.MODEL_PATH, 'two_tower_v2_history.json')
@@ -180,8 +201,8 @@ def train():
     # Step 5: 训练循环
     # ================================================================
     print(f"\nStep 5: Training from epoch {start_epoch+1}...")
-    print(f"    AMP={config.USE_AMP}, GradAccum={config.GRADIENT_ACCUM_STEPS}, "
-          f"Effective BS={config.V2_BATCH_SIZE * config.GRADIENT_ACCUM_STEPS}")
+    print(f"    AMP={config.USE_AMP}, GradAccum={config.V2_GRADIENT_ACCUM_STEPS}, "
+          f"Effective BS={config.V2_BATCH_SIZE * config.V2_GRADIENT_ACCUM_STEPS}")
 
     best_epoch = start_epoch if start_epoch > 0 else -1
 
@@ -189,13 +210,11 @@ def train():
         model.train()
         total_loss = 0.0
         num_batches = 0
-        optimizer.zero_grad()
 
         pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{config.V2_NUM_EPOCHS}")
-        for batch_idx, batch in enumerate(pbar):
+        for batch in pbar:
             batch = {k: v.to(device) for k, v in batch.items()}
 
-            # AMP 自动混合精度: forward 用 fp16, loss 自动 scale
             with torch.amp.autocast('cuda', enabled=config.USE_AMP):
                 user_vec, pos_item_vec = model(batch)
 
@@ -217,35 +236,25 @@ def train():
 
                 loss = model.compute_infonce_loss(user_vec, pos_item_vec, hard_neg_vecs,
                                                   click_weight=batch.get('click_weight'))
-                # 梯度累积：loss 除以累积步数
-                loss = loss / config.GRADIENT_ACCUM_STEPS
 
             if torch.isnan(loss) or torch.isinf(loss):
                 continue
 
-            # AMP: GradScaler 自动处理 loss 缩放
+            optimizer.zero_grad()
             if scaler is not None:
                 scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+                scaler.step(optimizer)
+                scaler.update()
             else:
                 loss.backward()
-
-            # 梯度累积：每 accum_steps 个 batch 才更新一次
-            if (batch_idx + 1) % config.GRADIENT_ACCUM_STEPS == 0:
-                if scaler is not None:
-                    scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-                if scaler is not None:
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    optimizer.step()
-                optimizer.zero_grad()
+                optimizer.step()
 
-            total_loss += loss.item() * config.GRADIENT_ACCUM_STEPS  # 恢复原始 loss 用于显示
+            total_loss += loss.item()
             num_batches += 1
-            eff_batch = config.V2_BATCH_SIZE * config.GRADIENT_ACCUM_STEPS
-            pbar.set_postfix(loss=f"{loss.item() * config.GRADIENT_ACCUM_STEPS:.4f}",
-                             eff_bs=f"{eff_batch}")
+            pbar.set_postfix(loss=f"{loss.item():.4f}")
 
         scheduler.step()
         train_loss = total_loss / max(num_batches, 1)
@@ -256,42 +265,59 @@ def train():
         # ---- 验证 ----
         if config.SKIP_EVAL:
             metrics = {'hr': 0.0, 'ndcg': 0.0, 'n_users': 0}
-        else:
-            print("  Running validation...")
+        elif getattr(config, 'EVAL_FULL_RANK', True):
+            print("  Running validation (Full rank)...")
             metrics = evaluate_two_tower(
                 model, val_click, train_click, user_features, item_features,
                 encoders, device, k=config.EVAL_K, max_users=config.EVAL_MAX_USERS
             )
+        else:
+            print(f"  Running validation (Sampled, {config.EVAL_NUM_NEGATIVES} negatives)...")
+            metrics = evaluate_two_tower_sampled(
+                model, val_click, train_click, user_features, item_features,
+                encoders, device, k=config.EVAL_K, max_users=config.EVAL_MAX_USERS,
+                num_negatives=config.EVAL_NUM_NEGATIVES
+            )
 
         hr = metrics['hr']
         ndcg = metrics['ndcg']
+        method = metrics.get('method', 'full')
+        n_neg = metrics.get('n_negatives', 0)
+        info = f"(sampled {n_neg})" if method == 'sampled' else "(full)"
         print(f"  → Val HR@{config.EVAL_K}={hr:.4f} ({hr*100:.1f}%) | "
               f"NDCG@{config.EVAL_K}={ndcg:.4f} | "
-              f"Users={metrics['n_users']}")
+              f"Users={metrics['n_users']} {info}")
 
         history.append({'epoch': epoch + 1, 'train_loss': train_loss,
                         'val_hr': hr, 'val_ndcg': ndcg})
 
-        # ---- 每 epoch 存档 ----
+        # ---- 每 epoch 存档 (仅权重, 不存优化器以节省磁盘) ----
         epoch_path = os.path.join(config.CHECKPOINT_DIR, f'two_tower_v2_epoch{epoch+1:02d}.pth')
         _save_checkpoint(model, optimizer, scheduler, scaler, model_cfg,
-                        epoch_path, epoch + 1, metrics, best_recall, patience_counter)
-        print(f"  → Saved: {epoch_path}")
+                        epoch_path, epoch + 1, metrics, best_ndcg, patience_counter,
+                        save_optimizer=False)
 
-        # ---- 更新最佳 ----
-        is_better = config.SKIP_EVAL or hr > best_recall
+        # ---- 更新最新存档 (含优化器, 用于断点恢复) ----
+        latest_path = os.path.join(config.MODEL_PATH, 'two_tower_v2_latest.pth')
+        _save_checkpoint(model, optimizer, scheduler, scaler, model_cfg,
+                        latest_path, epoch + 1, metrics, best_ndcg, patience_counter,
+                        save_optimizer=True)
+
+        # ---- 更新最佳 (基于 NDCG) ----
+        is_better = config.SKIP_EVAL or ndcg > best_ndcg
         if is_better:
-            best_recall = hr
+            best_ndcg = ndcg
             best_epoch = epoch + 1
             patience_counter = 0
             best_path = os.path.join(config.MODEL_PATH, 'two_tower_v2_best.pth')
             _save_checkpoint(model, optimizer, scheduler, scaler, model_cfg,
-                            best_path, epoch + 1, metrics, best_recall, patience_counter)
-            print(f"  ★ New best! HR@{config.EVAL_K}={hr:.4f}")
+                            best_path, epoch + 1, metrics, best_ndcg, patience_counter,
+                            save_optimizer=True)
+            print(f"  ★ New best! NDCG@{config.EVAL_K}={ndcg:.4f}")
         else:
             patience_counter += 1
             print(f"  No improvement for {patience_counter} epochs "
-                  f"(best HR@{config.EVAL_K}={best_recall:.4f} at epoch {best_epoch})")
+                  f"(best NDCG@{config.EVAL_K}={best_ndcg:.4f} at epoch {best_epoch})")
 
         if patience_counter >= config.EARLY_STOP_PATIENCE:
             print(f"\n>>> Early stop triggered after {epoch+1} epochs")
@@ -305,7 +331,7 @@ def train():
 
     print(f"\n{'='*60}")
     print(f"Training complete!")
-    print(f"  Best epoch: {best_epoch}, Best HR@{config.EVAL_K}={best_recall:.4f}")
+    print(f"  Best epoch: {best_epoch}, Best NDCG@{config.EVAL_K}={best_ndcg:.4f}")
     print(f"  Total epochs run: {len(history)}")
     print(f"  All checkpoints: {config.CHECKPOINT_DIR}/")
     print(f"{'='*60}")

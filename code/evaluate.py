@@ -8,6 +8,7 @@
 import pandas as pd
 import numpy as np
 import torch
+import os
 from collections import defaultdict
 
 
@@ -49,9 +50,9 @@ def _build_item_batch_for_indices(item_indices, item_features, device):
     subset = item_features.reindex(item_indices, fill_value=0)
     return {
         'item_id': torch.LongTensor(item_indices).to(device),
-        'category_id': torch.LongTensor(subset['category_idx'].values.astype(int)).to(device),
-        'item_click_count': torch.FloatTensor(subset['item_click_count_norm'].values).to(device),
-        'created_at_ts': torch.FloatTensor(subset['created_at_ts_norm'].values).to(device),
+        'category_id': torch.LongTensor(subset['category_idx'].values.astype(int).copy()).to(device),
+        'item_click_count': torch.FloatTensor(subset['item_click_count_norm'].values.copy()).to(device),
+        'created_at_ts': torch.FloatTensor(subset['created_at_ts_norm'].values.copy()).to(device),
     }
 
 
@@ -88,26 +89,45 @@ def evaluate_two_tower(model, val_df, train_df, user_features, item_features,
     # 1. 预计算所有物品向量
     all_item_vecs = compute_item_embeddings(model, num_items, item_features, device)
 
-    # 2. 构建训练集已交互物品集合 (评估时排除)
-    train_items = defaultdict(set)
-    for _, row in train_df.iterrows():
-        uid = row['user_id']
-        iid = row['click_article_id']
-        if iid in item_le.classes_:
-            train_items[uid].add(item_le.transform([iid])[0])
+    # --- 预构建 ID 映射 (只做一次) ---
+    raw_to_item_enc = {}
+    for i, cls in enumerate(item_le.classes_):
+        raw_to_item_enc[cls] = i
 
-    # 3. 构建验证集 ground truth
-    val_items = defaultdict(set)
-    for _, row in val_df.iterrows():
-        uid = row['user_id']
-        iid = row['click_article_id']
-        if iid in item_le.classes_ and uid in user_le.classes_:
-            val_items[uid].add(item_le.transform([iid])[0])
+    # 2. 构建训练集已交互物品集合 (向量化 groupby, 避免 iterrows)
+    # 先映射 item 编码
+    train_enc = train_df['click_article_id'].map(raw_to_item_enc).dropna().astype(int)
+    train_pairs = pd.DataFrame({
+        'user_id': train_df.loc[train_enc.index, 'user_id'],
+        'item_enc': train_enc.values
+    })
+    train_items = train_pairs.groupby('user_id')['item_enc'].apply(set).to_dict()
+
+    # 3. 构建验证集 ground truth (同样向量化)
+    val_users_set = set(user_le.classes_)
+    val_enc = val_df['click_article_id'].map(raw_to_item_enc).dropna().astype(int)
+    val_pairs = pd.DataFrame({
+        'user_id': val_df.loc[val_enc.index, 'user_id'],
+        'item_enc': val_enc.values
+    })
+    # 过滤有效用户
+    val_pairs = val_pairs[val_pairs['user_id'].isin(val_users_set)]
+    val_items = val_pairs.groupby('user_id')['item_enc'].apply(set).to_dict()
 
     # 4. 采样用户 (加速)
     val_users = list(val_items.keys())
     if max_users and len(val_users) > max_users:
         val_users = list(np.random.choice(val_users, max_users, replace=False))
+
+    # --- 预构建用户特征字典 (O(1) 查询, 替代逐行 DataFrame 扫描) ---
+    user_feat_dict = {}
+    for _, row in user_features.iterrows():
+        uid = row['user_id']
+        user_feat_dict[uid] = {
+            'hist': row['hist_items_trunc'],
+            'click_norm': row['click_count_norm'],
+            'span_norm': row['time_span_norm'],
+        }
 
     # 5. 逐用户评估
     hr_total, ndcgs = 0, []
@@ -119,17 +139,16 @@ def evaluate_two_tower(model, val_df, train_df, user_features, item_features,
         user_ids, histories, hist_lens, click_counts, time_spans = [], [], [], [], []
         valid_users_in_chunk = []
         for raw_uid in chunk_users:
-            row = user_features[user_features['user_id'] == raw_uid]
-            if len(row) == 0:
+            feat = user_feat_dict.get(raw_uid)
+            if feat is None:
                 continue
-            row = row.iloc[0]
             if raw_to_idx is not None:
                 uidx = raw_to_idx.get(raw_uid, 0)
             else:
                 uidx = user_le.transform([raw_uid])[0]
 
             hist_len = 50
-            hist = row['hist_items_trunc']
+            hist = feat['hist']
             hl = len(hist)
             if hl > hist_len:
                 hist = hist[-hist_len:]
@@ -139,8 +158,8 @@ def evaluate_two_tower(model, val_df, train_df, user_features, item_features,
             user_ids.append(uidx)
             histories.append(padded)
             hist_lens.append(hl)
-            click_counts.append(row['click_count_norm'])
-            time_spans.append(row['time_span_norm'])
+            click_counts.append(feat['click_norm'])
+            time_spans.append(feat['span_norm'])
             valid_users_in_chunk.append(raw_uid)
 
         if not valid_users_in_chunk:
@@ -171,7 +190,8 @@ def evaluate_two_tower(model, val_df, train_df, user_features, item_features,
             top_indices = np.argsort(s)[::-1][:k]
             gt_set = val_items.get(raw_uid, set())
             hits = gt_set.intersection(set(top_indices))
-            hr_total += 1
+            if hits:
+                hr_total += 1
             for pos, idx in enumerate(top_indices):
                 if idx in gt_set:
                     ndcgs.append(1.0 / np.log2(pos + 2))
@@ -183,6 +203,133 @@ def evaluate_two_tower(model, val_df, train_df, user_features, item_features,
         'hr': hr,
         'ndcg': expected_ndcg,
         'n_users': len(val_users),
+    }
+
+
+# ============================================================
+# Sampled 评估 (与 SASRec 论文对齐: 1正 vs N随机负)
+# ============================================================
+
+def evaluate_two_tower_sampled(model, val_df, train_df, user_features, item_features,
+                                encoders, device, k=20, max_users=3000, num_negatives=100):
+    """
+    Sampled metrics 评估 (SASRec 论文标准):
+    对每用户, 1 个正样本 vs `num_negatives` 个随机负样本排名 → HR@K / NDCG@K.
+    """
+    model.eval()
+    item_le = encoders['item_id']
+    user_le = encoders['user_id']
+    raw_to_idx = encoders.get('raw_to_idx', None)
+    num_items = len(item_le.classes_)
+
+    # 预构建映射
+    raw_to_item_enc = {cls: i for i, cls in enumerate(item_le.classes_)}
+
+    # 训练集已交互集合 (排除负样本候选)
+    train_enc = train_df['click_article_id'].map(raw_to_item_enc).dropna().astype(int)
+    train_pairs = pd.DataFrame({
+        'user_id': train_df.loc[train_enc.index, 'user_id'],
+        'item_enc': train_enc.values
+    })
+    train_items = train_pairs.groupby('user_id')['item_enc'].apply(set).to_dict()
+
+    # 验证集 ground truth (每用户取最近一次正交互)
+    val_users_set = set(user_le.classes_)
+    val_enc = val_df['click_article_id'].map(raw_to_item_enc).dropna().astype(int)
+    val_pairs = pd.DataFrame({
+        'user_id': val_df.loc[val_enc.index, 'user_id'],
+        'item_enc': val_enc.values
+    })
+    val_pairs = val_pairs[val_pairs['user_id'].isin(val_users_set)]
+    # 每个用户取最后一个作为 ground truth (leave-one-out)
+    val_items = val_pairs.groupby('user_id')['item_enc'].last().to_dict()
+
+    # 采样用户
+    val_users = list(val_items.keys())
+    if max_users and len(val_users) > max_users:
+        val_users = list(np.random.choice(val_users, max_users, replace=False))
+
+    # 预构建用户特征字典
+    user_feat_dict = {}
+    for _, row in user_features.iterrows():
+        uid = row['user_id']
+        user_feat_dict[uid] = {
+            'hist': row['hist_items_trunc'],
+            'click_norm': row['click_count_norm'],
+            'span_norm': row['time_span_norm'],
+        }
+
+    # 预计算所有物品向量 (仍然需要, 但评估时只取 N+1 个)
+    all_item_vecs = compute_item_embeddings(model, num_items, item_features, device)
+
+    # 逐用户 sampled 评估
+    hr_total, ndcgs = 0, []
+    rng = np.random.default_rng(42)
+
+    for raw_uid in val_users:
+        feat = user_feat_dict.get(raw_uid)
+        if feat is None:
+            continue
+        gt_item = val_items.get(raw_uid)
+        if gt_item is None:
+            continue
+
+        if raw_to_idx is not None:
+            uidx = raw_to_idx.get(raw_uid, 0)
+        else:
+            uidx = user_le.transform([raw_uid])[0]
+
+        hist_len = 50
+        hist = feat['hist']
+        hl = len(hist)
+        if hl > hist_len:
+            hist = hist[-hist_len:]
+            hl = hist_len
+        padded = hist + [0] * (hist_len - hl)
+
+        user_batch = {
+            'user_id': torch.LongTensor([uidx]).to(device),
+            'hist_items': torch.LongTensor([padded]).to(device),
+            'hist_len': torch.LongTensor([hl]).to(device),
+            'click_count': torch.FloatTensor([feat['click_norm']]).to(device),
+            'time_span': torch.FloatTensor([feat['span_norm']]).to(device),
+        }
+
+        with torch.no_grad():
+            user_vec = model.get_user_embedding(user_batch)  # (1, D)
+
+        # 采样 N 个负样本 (排除训练集和正样本)
+        excluded = train_items.get(raw_uid, set()) | {gt_item}
+        candidates = []
+        while len(candidates) < num_negatives:
+            neg = rng.integers(1, num_items)
+            if neg not in excluded:
+                candidates.append(neg)
+                excluded.add(neg)
+
+        # 正样本索引放在第 0 位
+        item_indices = [gt_item] + candidates
+        item_vecs = all_item_vecs[torch.LongTensor(item_indices).to(device)]  # (N+1, D)
+
+        score = torch.matmul(user_vec, item_vecs.t())  # (1, N+1)
+        score = score.cpu().numpy()[0]
+
+        # 排名: 0 号是正样本, 1..N 是负样本
+        rank = (score[1:] >= score[0]).sum() + 1  # 1-indexed rank
+        if rank <= k:
+            hr_total += 1
+            ndcgs.append(1.0 / np.log2(rank + 1))  # position = rank-1, so rank+1 = (pos+1)+1 = pos+2
+
+    n_eval = len(val_users)
+    hr = hr_total / n_eval if n_eval else 0
+    ndcg = sum(ndcgs) / n_eval if n_eval else 0
+
+    return {
+        'hr': hr,
+        'ndcg': ndcg,
+        'n_users': n_eval,
+        'n_negatives': num_negatives,
+        'method': 'sampled',
     }
 
 
@@ -200,64 +347,82 @@ def evaluate_din(model, val_df, user_features, item_features,
     item_le = encoders['item_id']
     user_le = encoders['user_id']
     raw_to_idx = encoders.get('raw_to_idx', None)
+    num_items = len(item_le.classes_)
+
+    # --- 预构建用户特征字典 (O(1) 查询) ---
+    user_feat_dict = {}
+    for _, row in user_features.iterrows():
+        uid = row['user_id']
+        user_feat_dict[uid] = {
+            'hist': row['hist_items_trunc'],
+            'click_norm': row['click_count_norm'],
+            'span_norm': row['time_span_norm'],
+        }
+
+    # --- 预构建物品特征 (numpy 数组, O(1) 下标访问) ---
+    item_cat_arr = np.zeros(num_items, dtype=np.int64)
+    item_click_arr = np.zeros(num_items, dtype=np.float32)
+    item_created_arr = np.zeros(num_items, dtype=np.float32)
+    for idx in item_features.index:
+        item_cat_arr[idx] = int(item_features.loc[idx].get('category_idx', 0))
+        item_click_arr[idx] = float(item_features.loc[idx].get('item_click_count_norm', 0))
+        item_created_arr[idx] = float(item_features.loc[idx].get('created_at_ts_norm', 0))
+
+    # --- 预构建验证集: user_id → [item_idx, ...] (O(1) 查询, 替代逐行扫 DataFrame) ---
+    raw_to_item_enc = {cls: i for i, cls in enumerate(item_le.classes_)}
+
+    # Filter val_df to valid users/items and encode
+    val_enc = val_df['click_article_id'].map(raw_to_item_enc).dropna().astype(int)
+    val_pairs = pd.DataFrame({
+        'user_id': val_df.loc[val_enc.index, 'user_id'],
+        'item_enc': val_enc.values
+    })
+    # Only keep users that are in user_feat_dict + user_le
+    valid_uids = set(user_feat_dict.keys()) & set(user_le.classes_)
+    val_pairs = val_pairs[val_pairs['user_id'].isin(valid_uids)]
+    val_by_user = val_pairs.groupby('user_id')['item_enc'].apply(list).to_dict()
 
     # 采样用户
-    val_users = val_df['user_id'].unique()
+    val_users = list(val_by_user.keys())
     if max_users and len(val_users) > max_users:
         val_users = list(np.random.choice(val_users, max_users, replace=False))
 
     pos_scores, neg_scores = [], []
     for raw_uid in val_users:
-        row = user_features[user_features['user_id'] == raw_uid]
-        if len(row) == 0:
-            continue
-        row = row.iloc[0]
+        feat = user_feat_dict[raw_uid]
         if raw_to_idx is not None:
             uidx = raw_to_idx.get(raw_uid, 0)
         else:
             uidx = user_le.transform([raw_uid])[0]
 
         hist_len = 50
-        hist = row['hist_items_trunc']
+        hist = feat['hist']
         hl = len(hist)
         if hl > hist_len:
             hist = hist[-hist_len:]
             hl = hist_len
         padded = hist + [0] * (hist_len - hl)
 
-        # 该用户验证集正样本
-        user_val = val_df[val_df['user_id'] == raw_uid]
-        for _, vrow in user_val.iterrows():
-            item_raw = vrow['click_article_id']
-            if item_raw not in item_le.classes_:
-                continue
-            item_idx = item_le.transform([item_raw])[0]
-            item_data = item_features.loc[item_idx] if item_idx in item_features.index else None
-            if item_data is None:
-                continue
-
+        # 该用户的验证集正样本 (从预建字典取, O(1))
+        for item_idx in val_by_user.get(raw_uid, []):
             # 正样本分数
             batch = {
                 'user_id': torch.LongTensor([uidx]).to(device),
                 'hist_items': torch.LongTensor([padded]).to(device),
                 'hist_len': torch.LongTensor([hl]).to(device),
-                'click_count': torch.FloatTensor([row['click_count_norm']]).to(device),
-                'time_span': torch.FloatTensor([row['time_span_norm']]).to(device),
+                'click_count': torch.FloatTensor([feat['click_norm']]).to(device),
+                'time_span': torch.FloatTensor([feat['span_norm']]).to(device),
                 'item_id': torch.LongTensor([item_idx]).to(device),
-                'category_id': torch.LongTensor([int(item_data.get('category_idx', 0))]).to(device),
-                'item_click_count': torch.FloatTensor([float(item_data.get('item_click_count_norm', 0))]).to(device),
-                'created_at_ts': torch.FloatTensor([float(item_data.get('created_at_ts_norm', 0))]).to(device),
+                'category_id': torch.LongTensor([item_cat_arr[item_idx]]).to(device),
+                'item_click_count': torch.FloatTensor([item_click_arr[item_idx]]).to(device),
+                'created_at_ts': torch.FloatTensor([item_created_arr[item_idx]]).to(device),
             }
             with torch.no_grad():
                 pos_scores.append(torch.sigmoid(model(batch)).item())
 
             # 随机负样本分数 (4 个)
-            num_items = len(item_le.classes_)
             for _ in range(4):
                 neg_idx = np.random.randint(1, num_items)
-                nd = item_features.loc[neg_idx] if neg_idx in item_features.index else None
-                if nd is None:
-                    continue
                 neg_batch = {
                     'user_id': batch['user_id'],
                     'hist_items': batch['hist_items'],
@@ -265,9 +430,9 @@ def evaluate_din(model, val_df, user_features, item_features,
                     'click_count': batch['click_count'],
                     'time_span': batch['time_span'],
                     'item_id': torch.LongTensor([neg_idx]).to(device),
-                    'category_id': torch.LongTensor([int(nd.get('category_idx', 0))]).to(device),
-                    'item_click_count': torch.FloatTensor([float(nd.get('item_click_count_norm', 0))]).to(device),
-                    'created_at_ts': torch.FloatTensor([float(nd.get('created_at_ts_norm', 0))]).to(device),
+                    'category_id': torch.LongTensor([item_cat_arr[neg_idx]]).to(device),
+                    'item_click_count': torch.FloatTensor([item_click_arr[neg_idx]]).to(device),
+                    'created_at_ts': torch.FloatTensor([item_created_arr[neg_idx]]).to(device),
                 }
                 with torch.no_grad():
                     neg_scores.append(torch.sigmoid(model(neg_batch)).item())
@@ -314,7 +479,7 @@ if __name__ == "__main__":
         df = pd.read_csv(result_path)
         user_recs = {}
         for _, row in df.iterrows():
-            user_recs[row['user_id']] = [row[f'article_{i+1}'] for i in range(5)]
+            user_recs[row['user_id']] = [row[f'item_{i+1}'] for i in range(5)]
 
         print(f">>> Loaded {len(user_recs)} users' recommendations")
 

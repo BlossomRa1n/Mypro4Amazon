@@ -5,10 +5,14 @@ import torch.nn.functional as F
 
 
 class UserTower(nn.Module):
-    def __init__(self, num_users, num_items, embed_dim, hidden_dims, hist_len=50):
+    def __init__(self, num_users, num_items, embed_dim, hidden_dims, hist_len=50,
+                 shared_item_embedding=None):  # 共享 ItemTower 的 embedding
         super().__init__()
         self.user_embedding = nn.Embedding(num_users, embed_dim, padding_idx=0)
-        self.item_embedding_for_hist = nn.Embedding(num_items, embed_dim, padding_idx=0)
+        if shared_item_embedding is not None:
+            self.item_embedding_for_hist = shared_item_embedding
+        else:
+            self.item_embedding_for_hist = nn.Embedding(num_items, embed_dim, padding_idx=0)
         self.hist_len = hist_len
         self.embed_dim = embed_dim
 
@@ -75,8 +79,10 @@ class TwoTowerModel(nn.Module):
         super().__init__()
         if hidden_dims is None:
             hidden_dims = [256, 128]
-        self.user_tower = UserTower(num_users, num_items, embed_dim, hidden_dims, hist_len)
+        # 先创建 ItemTower, 再让 UserTower 共享同一个 item_embedding
         self.item_tower = ItemTower(num_items, num_categories, embed_dim, hidden_dims)
+        self.user_tower = UserTower(num_users, num_items, embed_dim, hidden_dims, hist_len,
+                                     shared_item_embedding=self.item_tower.item_embedding)
         self.temperature = temperature
 
     def forward(self, batch):
@@ -176,10 +182,14 @@ class SASRecUserTower(nn.Module):
     3. 位置编码保留时序信息
     """
     def __init__(self, num_users, num_items, embed_dim, hidden_dims, hist_len=50,
-                 num_heads=2, num_blocks=2, dropout=0.1):
+                 num_heads=2, num_blocks=2, dropout=0.1,
+                 shared_item_embedding=None):  # 共享 ItemTower 的 embedding
         super().__init__()
         self.user_embedding = nn.Embedding(num_users, embed_dim, padding_idx=0)
-        self.item_embedding = nn.Embedding(num_items, embed_dim, padding_idx=0)
+        if shared_item_embedding is not None:
+            self.item_embedding = shared_item_embedding
+        else:
+            self.item_embedding = nn.Embedding(num_items, embed_dim, padding_idx=0)
         self.position_embedding = nn.Embedding(hist_len, embed_dim)
         self.hist_len = hist_len
         self.embed_dim = embed_dim
@@ -251,11 +261,13 @@ class TwoTowerV2Model(nn.Module):
         super().__init__()
         if hidden_dims is None:
             hidden_dims = [256, 128]
+        # 先创建 ItemTower, 再让 SASRecUserTower 共享同一个 item_embedding
+        self.item_tower = ItemTower(num_items, num_categories, embed_dim, hidden_dims)
         self.user_tower = SASRecUserTower(
             num_users, num_items, embed_dim, hidden_dims, hist_len,
-            num_heads, num_blocks, dropout
+            num_heads, num_blocks, dropout,
+            shared_item_embedding=self.item_tower.item_embedding
         )
-        self.item_tower = ItemTower(num_items, num_categories, embed_dim, hidden_dims)
         self.temperature = temperature
         self.num_hard_negatives = num_hard_negatives
 
@@ -371,10 +383,14 @@ class MINDUserTower(nn.Module):
     3. 动态路由自动发现兴趣聚类，无需人工标注
     """
     def __init__(self, num_users, num_items, embed_dim, hidden_dims, hist_len=50,
-                 num_interests=3, num_routing_iterations=3, dropout=0.1):
+                 num_interests=3, num_routing_iterations=3, dropout=0.1,
+                 shared_item_embedding=None):  # 共享 ItemTower 的 embedding
         super().__init__()
         self.user_embedding = nn.Embedding(num_users, embed_dim, padding_idx=0)
-        self.item_embedding = nn.Embedding(num_items, embed_dim, padding_idx=0)
+        if shared_item_embedding is not None:
+            self.item_embedding = shared_item_embedding
+        else:
+            self.item_embedding = nn.Embedding(num_items, embed_dim, padding_idx=0)
         self.hist_len = hist_len
         self.embed_dim = embed_dim
         self.num_interests = num_interests
@@ -459,11 +475,13 @@ class MINDModel(nn.Module):
         super().__init__()
         if hidden_dims is None:
             hidden_dims = [256, 128]
+        # 先创建 ItemTower, 再让 MINDUserTower 共享同一个 item_embedding
+        self.item_tower = ItemTower(num_items, num_categories, embed_dim, hidden_dims)
         self.user_tower = MINDUserTower(
             num_users, num_items, embed_dim, hidden_dims, hist_len,
-            num_interests, num_routing_iterations, dropout
+            num_interests, num_routing_iterations, dropout,
+            shared_item_embedding=self.item_tower.item_embedding
         )
-        self.item_tower = ItemTower(num_items, num_categories, embed_dim, hidden_dims)
         self.temperature = temperature
 
     def forward(self, batch):
@@ -602,6 +620,10 @@ class DINModel(nn.Module):
         self.mlp = nn.Sequential(*layers)
 
     def forward(self, batch):
+        """BCE pointwise (保留兼容推理)"""
+        return self._score(batch)
+
+    def _score(self, batch):
         user_emb = self.user_embedding(batch['user_id'])
         item_emb = self.item_embedding(batch['item_id'])
         cat_emb = self.category_embedding(batch['category_id'])
@@ -625,11 +647,22 @@ class DINModel(nn.Module):
         logit = self.mlp(concat_features).squeeze(-1)
         return logit
 
-    def compute_loss(self, logits, labels, click_weight=None):
+    def forward_pairwise(self, user_batch, pos_item_batch, neg_item_batch):
+        """BPR pairwise: 正负样本各自打分, 与双塔 forward 对齐"""
+        pos_score = self._score({**user_batch, **pos_item_batch})
+        neg_score = self._score({**user_batch, **neg_item_batch})
+        return pos_score, neg_score
+
+    def compute_bpr_loss(self, pos_score, neg_score):
+        return -torch.log(torch.sigmoid(pos_score - neg_score) + 1e-8).mean()
+
+    def compute_loss(self, logits, labels, click_weight=None, pos_weight=None):
+        kwargs = {}
+        if pos_weight is not None:
+            kwargs['pos_weight'] = torch.tensor([pos_weight], device=logits.device)
         if click_weight is not None:
-            return F.binary_cross_entropy_with_logits(
-                logits, labels.float(), weight=click_weight)
-        return F.binary_cross_entropy_with_logits(logits, labels.float())
+            kwargs['weight'] = click_weight
+        return F.binary_cross_entropy_with_logits(logits, labels.float(), **kwargs)
 
     def predict(self, batch):
         logit = self.forward(batch)

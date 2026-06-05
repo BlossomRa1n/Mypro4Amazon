@@ -25,7 +25,7 @@ from evaluate import split_train_val
 
 
 def evaluate_recall_merged(user_recall_dict, val_df, train_df, k=20):
-    """对合并后的召回结果计算 HR@K"""
+    """对合并后的召回结果计算 HR@K 和 NDCG@K"""
     val_items = defaultdict(set)
     for _, row in val_df.iterrows():
         if 'click_label' in val_df.columns and row.get('click_label') != 1:
@@ -37,15 +37,22 @@ def evaluate_recall_merged(user_recall_dict, val_df, train_df, k=20):
         train_items[row['user_id']].add(row['click_article_id'])
 
     hr_total = 0
+    ndcg_vals = []
+    n_users = len(val_items)
     for uid, gt_set in val_items.items():
         if uid not in user_recall_dict:
             continue
         recs = [item_id for item_id, _ in user_recall_dict[uid][:k]]
-        if gt_set.intersection(recs):
+        hits = gt_set.intersection(recs)
+        if hits:
             hr_total += 1
+        for pos, item_id in enumerate(recs):
+            if item_id in gt_set:
+                ndcg_vals.append(1.0 / np.log2(pos + 2))
 
-    n_users = len(val_items)
-    return hr_total / n_users if n_users else 0
+    hr = hr_total / n_users if n_users else 0
+    ndcg = sum(ndcg_vals) / n_users if n_users else 0
+    return hr, ndcg
 
 
 def main():
@@ -122,29 +129,31 @@ def main():
     channels = [ch_itemcf, ch_embed, ch_cat, ch_hot]
     channel_names = ['itemcf', 'embedding', 'category', 'hot']
 
-    # 6. Grid search
+    # 6. Grid search (NDCG 优化)
     print("[5/5] Grid searching weights...")
     candidates = [0.3, 0.5, 0.7, 1.0, 1.5, 2.0]
-    best_hr = -1
+    best_ndcg = -1
+    best_hr = 0
     best_weights = None
     results = []
 
     for w1, w2, w3, w4 in product(candidates, repeat=4):
-        merged = merge_recall_results(channels, [w1, w2, w3, w4])
-        hr = evaluate_recall_merged(merged, val_click, train_click, k=config.EVAL_K)
+        merged = merge_recall_results(channels, [w1, w2, w3, w4], final_recall_num=config.RECALL_NUM)
+        hr, ndcg = evaluate_recall_merged(merged, val_click, train_click, k=config.EVAL_K)
 
-        results.append((hr, (w1, w2, w3, w4)))
-        if hr > best_hr:
+        results.append((ndcg, hr, (w1, w2, w3, w4)))
+        if ndcg > best_ndcg:
+            best_ndcg = ndcg
             best_hr = hr
             best_weights = (w1, w2, w3, w4)
-            print(f"    ★ New best: {best_weights} → HR@{config.EVAL_K}={best_hr:.4f}")
+            print(f"    ★ New best: {best_weights} → NDCG@{config.EVAL_K}={best_ndcg:.4f}, HR={best_hr:.4f}")
 
     # 7. 输出结果
     print(f"\n{'='*60}")
     print(f"Best weights found:")
     print(f"  itemcf={best_weights[0]}, embedding={best_weights[1]}, "
           f"category={best_weights[2]}, hot={best_weights[3]}")
-    print(f"  HR@{config.EVAL_K}={best_hr:.4f} ({best_hr*100:.1f}%)")
+    print(f"  NDCG@{config.EVAL_K}={best_ndcg:.4f}, HR@{config.EVAL_K}={best_hr:.4f} ({best_hr*100:.1f}%)")
     print(f"\nCopy to config.py:")
     print(f"  RECALL_WEIGHTS = {{")
     print(f"      'itemcf':    {best_weights[0]},")
@@ -156,8 +165,8 @@ def main():
     # Top-10 for reference
     results.sort(key=lambda x: -x[0])
     print(f"\nTop-10 weight combinations:")
-    for i, (hr, w) in enumerate(results[:10]):
-        print(f"  {i+1}. HR={hr:.4f}  w={w}")
+    for i, (ndcg, hr, w) in enumerate(results[:10]):
+        print(f"  {i+1}. NDCG={ndcg:.4f} HR={hr:.4f}  w={w}")
 
     print(f"\nTotal combos tested: {len(results)}")
 

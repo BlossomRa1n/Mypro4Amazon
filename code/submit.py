@@ -4,28 +4,30 @@ import config
 
 def save_submission(user_recall_items_dict, submit_path, file_name='result.csv'):
     """
-    将推荐结果字典转换为提交格式
-    :param user_recall_items_dict: {user_id: [(item1, score1), (item2, score2)...]}
+    保存推荐结果为 CSV.
+
+    格式:
+      user_id, item_1, item_2, ..., item_K
+
+    参数:
+      user_recall_items_dict: {user_id: [(item_id, score), ...]}
+      submit_path: 输出目录
+      file_name: 输出文件名
     """
-    print(">>> Generating submission file...")
-    
-    # 1. 字典转列表
+    print(">>> Saving recommendations...")
+
     data = []
     for user_id, items in user_recall_items_dict.items():
-        # items 是 [(item_id, score), ...]
-        # 我们只需要 item_id，不需要分数
+        # items 是 [(item_id, score), ...]，只需要 item_id
         row = [user_id] + [item[0] for item in items]
         data.append(row)
-    
-    # 2. 转换为 DataFrame
-    # 列名: user_id, article_1, article_2, ..., article_5
-    columns = ['user_id'] + [f'article_{i+1}' for i in range(5)]
+
+    # 动态列名: 有几个推荐就几列
+    n_recs = len(data[0]) - 1 if data else 0
+    columns = ['user_id'] + [f'item_{i+1}' for i in range(n_recs)]
     df = pd.DataFrame(data, columns=columns)
-    
-    # 3. 保存
-    if not os.path.exists(submit_path):
-        os.makedirs(submit_path)
-        
+
+    os.makedirs(submit_path, exist_ok=True)
     final_path = os.path.join(submit_path, file_name)
     df.to_csv(final_path, index=False)
-    print(f"[OK] Submission saved to: {final_path}")
+    print(f"[OK] Saved {len(data):,} users × {n_recs} recommendations to {final_path}")

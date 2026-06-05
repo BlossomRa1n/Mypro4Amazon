@@ -3,3 +3,5 @@ torch
 numpy
 scikit-learn
 tqdm
+scipy
+implicit
