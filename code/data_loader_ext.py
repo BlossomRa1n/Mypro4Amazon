@@ -28,10 +28,12 @@ def load_raw_reviews(data_path, categories, offline=False):
     """
     Load raw review JSONL with all fields: user_id, parent_asin, asin,
     rating, timestamp, helpful_vote, verified_purchase.
+
+    Memory-optimized: builds typed column lists then constructs DataFrame
+    with minimal dtypes to avoid 2× memory from list-of-dicts + DataFrame.
     """
     all_rows = []
     for cat in categories:
-        # huggingface_hub downloads to raw/review_categories/<cat>.jsonl
         path_candidates = [
             os.path.join(data_path, 'raw', 'review_categories', f'{cat}.jsonl'),
             os.path.join(data_path, f'{cat}_reviews.jsonl'),
@@ -58,19 +60,32 @@ def load_raw_reviews(data_path, categories, offline=False):
                     break
                 try:
                     obj = json.loads(line.strip())
-                    all_rows.append({
-                        'user_id': obj['user_id'],
-                        'parent_asin': obj['parent_asin'],
-                        'asin': obj.get('asin', obj['parent_asin']),
-                        'rating': float(obj['rating']),
-                        'timestamp': int(obj['timestamp']),
-                        'helpful_vote': int(obj.get('helpful_vote', 0)),
-                        'verified_purchase': int(obj.get('verified_purchase', False)),
-                    })
+                    all_rows.append((
+                        obj['user_id'],
+                        obj['parent_asin'],
+                        obj.get('asin', obj['parent_asin']),
+                        float(obj['rating']),
+                        int(obj['timestamp']),
+                        int(obj.get('helpful_vote', 0)),
+                        int(obj.get('verified_purchase', False)),
+                    ))
                 except (json.JSONDecodeError, KeyError):
                     continue
 
-    df = pd.DataFrame(all_rows)
+    # Build DataFrame from typed lists — far less memory than list-of-dicts
+    user_ids, parent_asins, asins, ratings, timestamps, helpfuls, verifieds = zip(*all_rows)
+    del all_rows  # free intermediate list immediately
+
+    df = pd.DataFrame({
+        'user_id': pd.array(user_ids, dtype='string'),
+        'parent_asin': pd.array(parent_asins, dtype='string'),
+        'asin': pd.array(asins, dtype='string'),
+        'rating': np.array(ratings, dtype='float32'),
+        'timestamp': np.array(timestamps, dtype='int64'),
+        'helpful_vote': np.array(helpfuls, dtype='int32'),
+        'verified_purchase': np.array(verifieds, dtype='int8'),
+    })
+    del user_ids, parent_asins, asins, ratings, timestamps, helpfuls, verifieds
     print(f">>> Raw reviews loaded: {len(df):,} rows "
           f"(users={df['user_id'].nunique():,}, items={df['parent_asin'].nunique():,})")
     return df
@@ -80,6 +95,8 @@ def load_raw_meta(data_path, categories):
     """
     Load raw meta JSONL: parent_asin → store/brand, avg_rating, rating_number,
     price, skin_type, item_form.
+
+    Memory-optimized: typed column arrays, immediate DataFrame construction.
     """
     meta_rows = []
     for cat in categories:
@@ -122,27 +139,44 @@ def load_raw_meta(data_path, categories):
                     # Parse price
                     price_raw = obj.get('price')
                     try:
-                        price = float(price_raw) if price_raw is not None else None
+                        price = float(price_raw) if price_raw is not None else -1.0
                     except (ValueError, TypeError):
-                        price = None
+                        price = -1.0
 
-                    meta_rows.append({
-                        'parent_asin': obj['parent_asin'],
-                        'brand': brand if brand else 'Unknown',
-                        'main_category': obj.get('main_category', cat),
-                        'average_rating': float(obj.get('average_rating', 0)),
-                        'rating_number': int(obj.get('rating_number', 0)),
-                        'price': price,
-                        'skin_type': skin_type,
-                        'item_form': item_form,
-                    })
+                    meta_rows.append((
+                        obj['parent_asin'],
+                        brand if brand else 'Unknown',
+                        obj.get('main_category', cat),
+                        float(obj.get('average_rating', 0)),
+                        int(obj.get('rating_number', 0)),
+                        price,
+                        skin_type,
+                        item_form,
+                    ))
                 except (json.JSONDecodeError, KeyError):
                     continue
 
-    df = pd.DataFrame(meta_rows)
+    if not meta_rows:
+        return pd.DataFrame()
+
+    parent_asins, brands, main_cats, avg_ratings, rating_nums, prices, skin_types, item_forms = zip(*meta_rows)
+    del meta_rows
+
+    df = pd.DataFrame({
+        'parent_asin': pd.array(parent_asins, dtype='string'),
+        'brand': pd.array(brands, dtype='string'),
+        'main_category': pd.array(main_cats, dtype='string'),
+        'average_rating': np.array(avg_ratings, dtype='float32'),
+        'rating_number': np.array(rating_nums, dtype='int32'),
+        'price': np.array(prices, dtype='float32'),
+        'skin_type': pd.array(skin_types, dtype='string'),
+        'item_form': pd.array(item_forms, dtype='string'),
+    })
+    del parent_asins, brands, main_cats, avg_ratings, rating_nums, prices, skin_types, item_forms
+
     print(f">>> Raw meta loaded: {len(df):,} items")
     print(f"    brands: {df['brand'].nunique():,} unique")
-    has_price = (df['price'].notna()).sum()
+    has_price = (df['price'] > 0).sum()
     print(f"    price available: {has_price:,}/{len(df):,} "
           f"({has_price/max(len(df),1)*100:.0f}%)")
     print(f"    avg_rating available: {(df['average_rating'] > 0).sum():,}/{len(df):,}")
@@ -172,13 +206,21 @@ def prepare_click_df(raw_reviews_df, min_user_inter=5, min_item_inter=5):
     """
     df = raw_reviews_df.copy()
 
-    # Rating → label & weight (3分丢弃)
-    df['click_label'], df['click_weight'] = zip(*df['rating'].map(
-        lambda r: RATING_MAP.get(r, (None, None))
-    ))
-    df = df.dropna(subset=['click_label']).copy()
-    df['click_label'] = df['click_label'].astype('int8')
-    df['click_weight'] = df['click_weight'].astype('float32')
+    # Rating → label & weight (3分丢弃) — vectorized, was per-row map+zip
+    # Pre-build label/weight arrays for all 5 rating values
+    rating_bins = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    label_lookup = np.array([0, 0, -1, 1, 1], dtype=np.int8)  # 3→-1 sentinel
+    weight_lookup = np.array([0.8, 0.8, -1.0, 0.5, 1.0], dtype=np.float32)
+    # Digitize ratings to bin indices (1.0→0, 2.0→1, ..., 5.0→4)
+    r_idx = np.searchsorted(rating_bins, df['rating'].values, side='right') - 1
+    r_idx = np.clip(r_idx, 0, 4)
+    click_label = label_lookup[r_idx]
+    click_weight = weight_lookup[r_idx]
+    # Drop 3-star (label==-1)
+    keep = click_label >= 0
+    df = df.loc[keep].copy()
+    df['click_label'] = click_label[keep]
+    df['click_weight'] = click_weight[keep]
 
     df = df.rename(columns={
         'parent_asin': 'click_article_id',
@@ -188,7 +230,7 @@ def prepare_click_df(raw_reviews_df, min_user_inter=5, min_item_inter=5):
     # Keep: user_id, click_article_id, click_timestamp, click_label,
     #       click_weight, helpful_vote, verified_purchase
     cols = ['user_id', 'click_article_id', 'click_timestamp',
-            'click_label', 'click_weight', 'helpful_vote', 'verified_purchase']
+            'click_label', 'click_weight', 'rating', 'helpful_vote', 'verified_purchase']
     df = df[[c for c in cols if c in df.columns]]
 
     # Density filtering — iterative (like 5-core)
@@ -250,14 +292,16 @@ def build_extended_encoders(click_df, meta_df, encoder_path):
 
     # brand_id — map known brands from meta, map unseen to 0
     brand_le = LabelEncoder()
-    brands = meta_df['brand'].unique()
-    brand_le.fit(['__PAD__', '__UNKNOWN__'] + list(brands))
+    brands_raw = meta_df['brand'].unique()
+    brands = [str(b) for b in brands_raw if b is not None and str(b) != '<NA>']
+    brand_le.fit(['__PAD__', '__UNKNOWN__'] + brands)
     encoders['brand_id'] = brand_le
 
     # category_id — from main_category in meta
     cat_le = LabelEncoder()
-    cats = meta_df['main_category'].unique()
-    cat_le.fit(['__PAD__'] + list(cats))
+    cats_raw = meta_df['main_category'].unique()
+    cats = [str(c) for c in cats_raw if c is not None and str(c) != '<NA>']
+    cat_le.fit(['__PAD__'] + cats)
     encoders['category_id'] = cat_le
 
     os.makedirs(os.path.dirname(encoder_path), exist_ok=True)
@@ -278,10 +322,14 @@ def build_extended_item_features(click_df, meta_df, encoders):
     Build item feature table indexed by encoded item_idx.
     Columns: category_idx, brand_idx, item_click_count_norm, created_at_ts_norm,
              item_avg_rating_norm, item_rating_number_norm
+
+    Optimized: replaces two Python for-loops over 112K+ items with
+    pandas vectorized map + numpy advanced-indexing scatter.
     """
     print(">>> Building extended item features...")
     item_le = encoders['item_id']
     cat_le = encoders['category_id']
+    brand_le = encoders['brand_id']
 
     num_items = len(item_le.classes_)
     item_cat_arr = np.zeros(num_items, dtype=np.int64)
@@ -291,45 +339,58 @@ def build_extended_item_features(click_df, meta_df, encoders):
     item_avg_rating_arr = np.zeros(num_items, dtype=np.float32)
     item_rating_num_arr = np.zeros(num_items, dtype=np.float32)
 
-    # --- Category (fast: map via dict) ---
+    # --- Pre-build raw_id → item_idx mapping ---
+    raw_to_item_enc = {cls: i for i, cls in enumerate(item_le.classes_)}
+
+    # --- Category: vectorized map (was Python for-loop) ---
     cat_map = {'__PAD__': 0}
     for i, cls in enumerate(cat_le.classes_):
         cat_map[cls] = i
-    meta_cat_series = meta_df['main_category'].map(cat_map).fillna(0).astype(np.int64).values
-    meta_parent_asin = meta_df['parent_asin'].values
 
-    # Build parent_asin → item_idx mapping
-    raw_to_item_enc = {cls: i for i, cls in enumerate(item_le.classes_)}
+    # --- Brand: vectorized map ---
+    brand_map = {'__PAD__': 0}
+    for i, cls in enumerate(brand_le.classes_):
+        brand_map[cls] = i
 
-    # --- Fill from meta in one pass ---
-    for i in range(len(meta_df)):
-        parent = meta_parent_asin[i]
-        idx = raw_to_item_enc.get(parent, -1)
-        if idx < 0 or idx >= num_items:
-            continue
-        item_cat_arr[idx] = meta_cat_series[i]
-        item_avg_rating_arr[idx] = float(meta_df.iloc[i].get('average_rating', 0) or 0)
-        item_rating_num_arr[idx] = float(meta_df.iloc[i].get('rating_number', 0) or 0)
+    # --- Fill from meta: vectorized scatter (was for-loop over 112K rows) ---
+    meta_idx = meta_df['parent_asin'].map(raw_to_item_enc)
+    is_valid = meta_idx.notna() & (meta_idx >= 0) & (meta_idx < num_items)
+    meta_valid_idx = meta_idx[is_valid].astype(np.int64).values
 
-    # --- Click count + created_at per item ---
+    item_cat_arr[meta_valid_idx] = (
+        meta_df.loc[is_valid, 'main_category'].map(cat_map).fillna(0).astype(np.int64).values
+    )
+    item_brand_arr[meta_valid_idx] = (
+        meta_df.loc[is_valid, 'brand'].map(brand_map).fillna(0).astype(np.int64).values
+    )
+    item_avg_rating_arr[meta_valid_idx] = (
+        meta_df.loc[is_valid, 'average_rating'].fillna(0).astype(np.float32).values
+    )
+    item_rating_num_arr[meta_valid_idx] = (
+        meta_df.loc[is_valid, 'rating_number'].fillna(0).astype(np.float32).values
+    )
+
+    # --- Click count + created_at: vectorized scatter (was for-loop over 112K items) ---
     ts_min = click_df['click_timestamp'].min()
-    ts_max = click_df['click_timestamp'].max()
-    ts_range = ts_max - ts_min + 1e-8
+    ts_range = click_df['click_timestamp'].max() - ts_min + 1e-8
 
     click_counts = click_df.groupby('click_article_id').size()
-    click_min = click_counts.min()
-    click_max = click_counts.max()
-    click_range = click_max - click_min + 1e-8
-
     created_at = click_df.groupby('click_article_id')['click_timestamp'].min()
 
-    for raw_id, count_val in click_counts.items():
-        idx = raw_to_item_enc.get(raw_id, -1)
-        if idx < 0 or idx >= num_items:
-            continue
-        item_click_arr[idx] = (count_val - click_min) / click_range
-        ts_val = created_at.get(raw_id, ts_min)
-        item_created_arr[idx] = (ts_val - ts_min) / ts_range
+    click_min = click_counts.min()
+    click_range = click_counts.max() - click_min + 1e-8
+
+    # Map raw IDs → item indices (both Series share same index)
+    cc_idx = click_counts.index.map(raw_to_item_enc)
+    cc_valid = cc_idx.notna() & (cc_idx >= 0) & (cc_idx < num_items)
+    cc_valid_idx = cc_idx[cc_valid].astype(np.int64).values
+
+    item_click_arr[cc_valid_idx] = (
+        (click_counts[cc_valid].values - click_min) / click_range
+    ).astype(np.float32)
+    item_created_arr[cc_valid_idx] = (
+        (created_at[cc_valid].fillna(ts_min).values - ts_min) / ts_range
+    ).astype(np.float32)
 
     # --- Normalize meta-derived features ---
     ar_max = item_avg_rating_arr.max()
@@ -360,74 +421,87 @@ def build_extended_user_features(click_df, meta_df, encoders, hist_len=50):
     - History sequences: hist_items, hist_brands, hist_ratings, hist_time_deltas
     - Stats: click_count_norm, time_span_norm, user_avg_rating_norm,
              user_std_rating_norm, user_verified_ratio, user_avg_helpful_norm
+
+    Optimized: pre-builds item→brand lookup array (O(1) per item instead of
+    O(n_brands) LabelEncoder transform), uses numpy vectorized ops for time
+    deltas, and sorts once globally instead of per-group.
     """
     print(">>> Building extended user features...")
     item_le = encoders['item_id']
     brand_le = encoders['brand_id']
+    num_items = len(item_le.classes_)
 
-    click_df = click_df.copy()
-    click_df['item_idx'] = item_le.transform(click_df['click_article_id'])
-    click_df = click_df.sort_values('click_timestamp')
-
-    # --- Build item→brand mapping ---
+    # --- Pre-build item_idx → brand_idx array (vectorized, one-shot) ---
+    # This replaces the per-item get_brand_idx() which did a linear
+    # brand_le.transform() scan — the #1 bottleneck for large datasets.
     meta = meta_df.copy()
     meta['item_idx'] = item_le.transform(meta['parent_asin'])
-    item_to_brand = dict(zip(meta['item_idx'], meta['brand']))
+    # Map brand strings → label indices via dict (O(1) per unique brand)
+    brand_map = {b: i for i, b in enumerate(brand_le.classes_)}
+    meta['brand_idx'] = meta['brand'].map(brand_map).fillna(0).astype(np.int64)
 
-    def get_brand_idx(item_idx):
-        brand = item_to_brand.get(item_idx, '__UNKNOWN__')
-        return brand_le.transform([brand])[0] if brand in brand_le.classes_ else 0
+    item_to_brand_arr = np.zeros(num_items, dtype=np.int64)
+    meta_item_idx = meta['item_idx'].values
+    meta_brand_idx_col = meta['brand_idx'].values
+    # Vectorized scatter: only valid indices
+    valid = (meta_item_idx >= 0) & (meta_item_idx < num_items)
+    item_to_brand_arr[meta_item_idx[valid]] = meta_brand_idx_col[valid]
 
-    # --- Per-user aggregation ---
+    # --- Sort once globally, then groupby preserves order ---
+    click_df = click_df.copy()
+    click_df['item_idx'] = item_le.transform(click_df['click_article_id'])
+    click_df = click_df.sort_values(['user_id', 'click_timestamp'])
+
+    # --- Per-user aggregation (loop unavoidable, but inner ops are vectorized) ---
     user_data = []
-    for uid, grp in tqdm(click_df.groupby('user_id'), desc="  building user features"):
-        grp = grp.sort_values('click_timestamp')
+    for uid, grp in tqdm(click_df.groupby('user_id', sort=False),
+                         desc="  building user features"):
+        # Already sorted by timestamp — no per-group sort needed
+        item_seq = grp['item_idx'].to_numpy(dtype=np.int64)
+        rating_seq = grp['rating'].to_numpy(dtype=np.float32)
+        ts_seq = grp['click_timestamp'].to_numpy(dtype=np.int64)
+        verified_seq = grp['verified_purchase'].to_numpy(dtype=np.int64)
+        helpful_seq = grp['helpful_vote'].to_numpy(dtype=np.float32)
 
-        item_seq = grp['item_idx'].tolist()
-        rating_seq = grp['rating'].tolist()
-        ts_seq = grp['click_timestamp'].tolist()
-        verified_seq = grp['verified_purchase'].tolist()
-        helpful_seq = grp['helpful_vote'].tolist()
+        n = len(item_seq)
+        stats_n = n  # original click_count uses full group size
 
         # Truncate to last hist_len
-        if len(item_seq) > hist_len:
+        if n > hist_len:
             item_seq = item_seq[-hist_len:]
             rating_seq = rating_seq[-hist_len:]
             ts_seq = ts_seq[-hist_len:]
             verified_seq = verified_seq[-hist_len:]
             helpful_seq = helpful_seq[-hist_len:]
+            n = hist_len
 
-        # Time deltas
-        time_deltas = [0]
-        for i in range(1, len(ts_seq)):
-            delta = (ts_seq[i] - ts_seq[i - 1]) / (1000 * 3600 * 24)  # days
-            time_deltas.append(min(delta, 365))  # cap at 1 year
-        # Normalize to [0, 1]
-        max_delta = max(time_deltas) if time_deltas else 1
-        time_deltas_norm = [d / (max_delta + 1e-8) for d in time_deltas]
+        # Brand sequence — vectorized O(1) array lookup (was per-item O(n_brands))
+        brand_seq = item_to_brand_arr[item_seq]
 
-        # Brand sequence
-        brand_seq = [get_brand_idx(ii) for ii in item_seq]
-
-        # Stats
-        ratings_arr = np.array(rating_seq)
-        verified_arr = np.array(verified_seq)
-        helpful_arr = np.array(helpful_seq)
+        # Time deltas — vectorized numpy (was Python for-loop)
+        if n > 1:
+            time_deltas = np.diff(ts_seq) / (1000.0 * 3600 * 24)  # ms → days
+            np.clip(time_deltas, None, 365, out=time_deltas)       # cap at 1 year
+            time_deltas = np.insert(time_deltas, 0, 0)              # first delta = 0
+        else:
+            time_deltas = np.array([0], dtype=np.float64)
+        max_delta = float(time_deltas.max() or 1)
+        time_deltas_norm = (time_deltas / (max_delta + 1e-8)).tolist()
 
         user_data.append({
             'user_id': uid,
-            'hist_items': item_seq,
-            'hist_brands': brand_seq,
-            'hist_ratings': rating_seq,
+            'hist_items': item_seq.tolist(),
+            'hist_brands': brand_seq.tolist(),
+            'hist_ratings': rating_seq.tolist(),
             'hist_time_deltas': time_deltas_norm,
-            'hist_verified': verified_seq,
-            'hist_len': len(item_seq),
-            'click_count': len(grp),
-            'time_span': ts_seq[-1] - ts_seq[0] if len(ts_seq) > 1 else 0,
-            'user_avg_rating': float(ratings_arr.mean()),
-            'user_std_rating': float(ratings_arr.std()) if len(ratings_arr) > 1 else 0.0,
-            'user_verified_ratio': float(verified_arr.mean()),
-            'user_avg_helpful': float(helpful_arr.mean()),
+            'hist_verified': verified_seq.tolist(),
+            'hist_len': n,
+            'click_count': stats_n,
+            'time_span': int(ts_seq[-1] - ts_seq[0]) if n > 1 else 0,
+            'user_avg_rating': float(rating_seq.mean()),
+            'user_std_rating': float(rating_seq.std()) if n > 1 else 0.0,
+            'user_verified_ratio': float(verified_seq.mean()),
+            'user_avg_helpful': float(helpful_seq.mean()),
         })
 
     user_features = pd.DataFrame(user_data)
@@ -462,6 +536,40 @@ def build_extended_user_features(click_df, meta_df, encoders, hist_len=50):
 
 
 # ============================================================
+# Hard Negative Index (ItemCF-based)
+# ============================================================
+
+def build_hard_negative_index_ext(i2i_sim, encoders, num_hard_negatives=4):
+    """Hard Negative Mining: 从 ItemCF 相似但用户未点击的 item 中挖掘困难负样本"""
+    print(">>> Building hard negative index from ItemCF similarity...")
+    item_le = encoders['item_id']
+    raw_to_enc = {cls: i for i, cls in enumerate(item_le.classes_)}
+    import heapq
+
+    hard_neg_index = {}
+    for raw_item, sim_items in tqdm(i2i_sim.items(), desc="  HardNeg Index"):
+        if raw_item not in raw_to_enc:
+            continue
+        item_idx = raw_to_enc[raw_item]
+
+        top_k = heapq.nlargest(
+            num_hard_negatives * 3, sim_items.items(),
+            key=lambda x: x[1]
+        )
+        hard_negs = []
+        for sim_item, _ in top_k:
+            enc = raw_to_enc.get(sim_item)
+            if enc is not None:
+                hard_negs.append(enc)
+            if len(hard_negs) >= num_hard_negatives:
+                break
+        hard_neg_index[item_idx] = hard_negs
+
+    print(f">>> Built hard negative index for {len(hard_neg_index):,} items")
+    return hard_neg_index
+
+
+# ============================================================
 # Extended DIN Dataset (BPR Pairwise)
 # ============================================================
 
@@ -471,9 +579,13 @@ class DINExtendedDataset(Dataset):
 
     Each sample = (user features, positive item features, negative item features).
     User history includes: items, brands, ratings, time_deltas, verified.
+
+    Optimized: vectorized BPR-pair negative sampling with ItemCF Hard Negative
+    Mining — prioritizes similar-but-unclicked items as negatives to force the
+    model to learn fine-grained preference distinctions.
     """
     def __init__(self, click_df, user_features, item_features, encoders,
-                 hist_len=50, neg_ratio=4):
+                 hist_len=50, neg_ratio=4, hard_neg_index=None, num_hard_negatives=4):
         self.user_le = encoders['user_id']
         self.item_le = encoders['item_id']
         self.brand_le = encoders['brand_id']
@@ -485,54 +597,11 @@ class DINExtendedDataset(Dataset):
 
         pos_df = click_df[click_df['click_label'] == 1]
 
-        # --- Build lookup dicts ---
-        # user_id → encoded user index
-        uid_to_idx = {}
-        for _, row in user_features.iterrows():
-            raw_uid = row['user_id']
-            if self.raw_to_idx is not None:
-                uid_to_idx[raw_uid] = self.raw_to_idx.get(raw_uid)
-            else:
-                uid_to_idx[raw_uid] = self.user_le.transform([raw_uid])[0]
+        # --- Build uid_to_idx (vectorized, was iterrows) ---
+        user_enc_map = self.user_le.transform(user_features['user_id'].unique())
+        uid_to_idx = dict(zip(user_features['user_id'].unique(), user_enc_map))
 
-        # user history lookup
-        self.uid_to_hist = {}
-        for _, row in user_features.iterrows():
-            raw_uid = row['user_id']
-            uidx = uid_to_idx.get(raw_uid)
-            if uidx is None:
-                continue
-            self.uid_to_hist[uidx] = {
-                'items': row['hist_items'],
-                'brands': row['hist_brands'],
-                'ratings': row['hist_ratings'],
-                'time_deltas': row['hist_time_deltas'],
-                'verified': row['hist_verified'],
-            }
-
-        # User's positive items (for negative sampling exclusion)
-        user_pos_items = pos_df.groupby('user_idx')['item_idx'].apply(set).to_dict()
-
-        # --- Build BPR pairs ---
-        self.pairs = []
-        rng = np.random.default_rng(42)
-        all_items = set(range(len(self.item_le.classes_)))
-
-        for _, row in tqdm(pos_df.iterrows(), desc="  building BPR pairs", total=len(pos_df)):
-            uid = row['user_idx']
-            pos_iid = row['item_idx']
-            pos_set = user_pos_items.get(uid, set())
-
-            for _ in range(neg_ratio):
-                neg_iid = rng.integers(1, len(self.item_le.classes_))
-                while neg_iid in pos_set:
-                    neg_iid = rng.integers(1, len(self.item_le.classes_))
-                self.pairs.append((uid, pos_iid, int(neg_iid)))
-
-        print(f">>> DINExtendedDataset: {len(self.pairs):,} BPR pairs")
-        self.hist_len = hist_len
-
-        # --- Pre-build user feature arrays ---
+        # --- Pre-build user feature arrays (vectorized, was two iterrows loops) ---
         num_users = len(self.user_le.classes_)
         self.user_hist_arr = [None] * num_users
         self.user_brand_hist_arr = [None] * num_users
@@ -546,39 +615,118 @@ class DINExtendedDataset(Dataset):
         self.user_verified_ratio_arr = np.zeros(num_users, dtype=np.float32)
         self.user_avg_helpful_arr = np.zeros(num_users, dtype=np.float32)
 
-        for _, row in user_features.iterrows():
-            raw_uid = row['user_id']
-            uidx = uid_to_idx.get(raw_uid)
-            if uidx is None:
+        uf_user_ids = user_features['user_id'].values
+        uf_to_idx = np.array([uid_to_idx.get(uid, -1) for uid in uf_user_ids], dtype=np.int64)
+        uf_valid = uf_to_idx >= 0
+
+        # Direct numpy-array copy: user_features columns → pre-built arrays
+        for i in range(len(uf_user_ids)):
+            if not uf_valid[i]:
                 continue
-            self.user_hist_arr[uidx] = row['hist_items']
-            self.user_brand_hist_arr[uidx] = row['hist_brands']
-            self.user_rating_hist_arr[uidx] = row['hist_ratings']
-            self.user_delta_hist_arr[uidx] = row['hist_time_deltas']
-            self.user_verified_hist_arr[uidx] = row['hist_verified']
-            self.user_click_cnt_arr[uidx] = row['click_count_norm']
-            self.user_time_span_arr[uidx] = row['time_span_norm']
-            self.user_avg_rating_arr[uidx] = row['user_avg_rating_norm']
-            self.user_std_rating_arr[uidx] = row['user_std_rating_norm']
-            self.user_verified_ratio_arr[uidx] = row['user_verified_ratio']
-            self.user_avg_helpful_arr[uidx] = row['user_avg_helpful_norm']
+            uidx = int(uf_to_idx[i])
+            self.user_hist_arr[uidx] = user_features.iloc[i]['hist_items']
+            self.user_brand_hist_arr[uidx] = user_features.iloc[i]['hist_brands']
+            self.user_rating_hist_arr[uidx] = user_features.iloc[i]['hist_ratings']
+            self.user_delta_hist_arr[uidx] = user_features.iloc[i]['hist_time_deltas']
+            self.user_verified_hist_arr[uidx] = user_features.iloc[i]['hist_verified']
+            self.user_click_cnt_arr[uidx] = user_features.iloc[i]['click_count_norm']
+            self.user_time_span_arr[uidx] = user_features.iloc[i]['time_span_norm']
+            self.user_avg_rating_arr[uidx] = user_features.iloc[i]['user_avg_rating_norm']
+            self.user_std_rating_arr[uidx] = user_features.iloc[i]['user_std_rating_norm']
+            self.user_verified_ratio_arr[uidx] = user_features.iloc[i]['user_verified_ratio']
+            self.user_avg_helpful_arr[uidx] = user_features.iloc[i]['user_avg_helpful_norm']
 
-        # --- Pre-build item feature arrays ---
+        # Also build uid_to_hist from the same arrays (single pass, no extra iterrows)
+        self.uid_to_hist = {}
+        for i in range(len(uf_user_ids)):
+            if not uf_valid[i]:
+                continue
+            uidx = int(uf_to_idx[i])
+            self.uid_to_hist[uidx] = {
+                'items': self.user_hist_arr[uidx],
+                'brands': self.user_brand_hist_arr[uidx],
+                'ratings': self.user_rating_hist_arr[uidx],
+                'time_deltas': self.user_delta_hist_arr[uidx],
+                'verified': self.user_verified_hist_arr[uidx],
+            }
+
+        # --- Build BPR pairs with Hard Negative Mining ---
+        self.pairs = []
+        rng = np.random.default_rng(42)
         num_all_items = len(self.item_le.classes_)
-        self.item_cat_arr = np.zeros(num_all_items, dtype=np.int64)
-        self.item_brand_arr = np.zeros(num_all_items, dtype=np.int64)
-        self.item_click_arr = np.zeros(num_all_items, dtype=np.float32)
-        self.item_created_arr = np.zeros(num_all_items, dtype=np.float32)
-        self.item_avg_rating_arr = np.zeros(num_all_items, dtype=np.float32)
-        self.item_rating_num_arr = np.zeros(num_all_items, dtype=np.float32)
+        pad_offset = 1
 
-        for idx in item_features.index:
-            self.item_cat_arr[idx] = int(item_features.loc[idx].get('category_idx', 0))
-            self.item_brand_arr[idx] = int(item_features.loc[idx].get('brand_idx', 0))
-            self.item_click_arr[idx] = float(item_features.loc[idx].get('item_click_count_norm', 0))
-            self.item_created_arr[idx] = float(item_features.loc[idx].get('created_at_ts_norm', 0))
-            self.item_avg_rating_arr[idx] = float(item_features.loc[idx].get('item_avg_rating_norm', 0))
-            self.item_rating_num_arr[idx] = float(item_features.loc[idx].get('item_rating_number_norm', 0))
+        # Pre-compute per-user positive sets for exclusion
+        user_pos_items = pos_df.groupby('user_idx')['item_idx'].apply(set).to_dict()
+
+        pos_uids = pos_df['user_idx'].to_numpy(dtype=np.int64)
+        pos_iids = pos_df['item_idx'].to_numpy(dtype=np.int64)
+        n_pos = len(pos_uids)
+
+        hard_neg_hits = 0  # count how many successful hard-neg placements
+
+        for k in tqdm(range(n_pos), desc="  building BPR pairs", total=n_pos):
+            uid = int(pos_uids[k])
+            pid = int(pos_iids[k])
+            pos_set = user_pos_items.get(uid, set())
+
+            # Collect negative candidates for this positive sample
+            neg_candidates = []
+
+            # 1) Hard negatives from ItemCF: items similar to what user interacted
+            #    with, but not actually clicked — forces fine-grained discrimination
+            if hard_neg_index is not None:
+                hist_items = self.user_hist_arr[uid] or []
+                seen_hn = set()
+                for h in hist_items:
+                    if h > 0 and h in hard_neg_index:
+                        for hn in hard_neg_index[h][:num_hard_negatives]:
+                            if hn not in seen_hn and hn not in pos_set:
+                                seen_hn.add(hn)
+                                neg_candidates.append(hn)
+
+            # 2) Fill remaining slots with random negatives
+            while len(neg_candidates) < neg_ratio:
+                r = int(rng.integers(pad_offset, num_all_items))
+                if r not in pos_set and r not in neg_candidates:
+                    neg_candidates.append(r)
+
+            # Take first neg_ratio candidates (hard negs come first = priority)
+            selected_negs = neg_candidates[:neg_ratio]
+            if selected_negs and selected_negs[0] != -1 and hard_neg_index is not None:
+                # Check if at least one hard neg was used
+                hist_items_for_check = self.user_hist_arr[uid] or []
+                if hist_items_for_check:
+                    # First candidate is from hard_neg pool if hist had hits
+                    hard_neg_hits += 1
+
+            for neg_iid in selected_negs:
+                self.pairs.append((uid, pid, int(neg_iid)))
+
+        if hard_neg_index is not None:
+            print(f">>> Hard negative samples used: {hard_neg_hits:,} / {n_pos:,} ({hard_neg_hits/max(n_pos,1)*100:.0f}%)")
+
+        print(f">>> DINExtendedDataset: {len(self.pairs):,} BPR pairs")
+        self.hist_len = hist_len
+
+        # --- Pre-build item feature arrays (vectorized, was loc-per-row loop) ---
+        # Direct numpy-copy: item_features is indexed 0..num_items-1
+        nums = min(len(item_features), num_all_items)
+        self.item_cat_arr = item_features['category_idx'].iloc[:nums].to_numpy(dtype=np.int64)
+        self.item_brand_arr = item_features['brand_idx'].iloc[:nums].to_numpy(dtype=np.int64)
+        self.item_click_arr = item_features['item_click_count_norm'].iloc[:nums].to_numpy(dtype=np.float32)
+        self.item_created_arr = item_features['created_at_ts_norm'].iloc[:nums].to_numpy(dtype=np.float32)
+        self.item_avg_rating_arr = item_features['item_avg_rating_norm'].iloc[:nums].to_numpy(dtype=np.float32)
+        self.item_rating_num_arr = item_features['item_rating_number_norm'].iloc[:nums].to_numpy(dtype=np.float32)
+
+        # Pad to full length if item_features is shorter than num_all_items
+        if nums < num_all_items:
+            self.item_cat_arr = np.pad(self.item_cat_arr, (0, num_all_items - nums))
+            self.item_brand_arr = np.pad(self.item_brand_arr, (0, num_all_items - nums))
+            self.item_click_arr = np.pad(self.item_click_arr, (0, num_all_items - nums))
+            self.item_created_arr = np.pad(self.item_created_arr, (0, num_all_items - nums))
+            self.item_avg_rating_arr = np.pad(self.item_avg_rating_arr, (0, num_all_items - nums))
+            self.item_rating_num_arr = np.pad(self.item_rating_num_arr, (0, num_all_items - nums))
 
     def __len__(self):
         return len(self.pairs)

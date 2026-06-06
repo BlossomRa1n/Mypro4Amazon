@@ -20,21 +20,24 @@ def split_train_val(click_df, split_ratio=0.8):
     """
     按用户时序分割训练/验证集。保留全量交互用于训练（含显式负样本）。
     验证集只保留正样本 (4-5 分)，即我们只评估模型对用户喜欢的商品的命中率。
-    """
-    click_df = click_df.sort_values('click_timestamp')
-    train_rows, val_rows = [], []
-    for _, grp in click_df.groupby('user_id'):
-        grp = grp.sort_values('click_timestamp')
-        split_point = max(1, int(len(grp) * split_ratio))
-        train_rows.append(grp.iloc[:split_point])
-        # 验证集只取正样本
-        val_candidates = grp.iloc[split_point:]
-        val_pos = val_candidates[val_candidates.get('click_label', 1) == 1]
-        if len(val_pos) > 0:
-            val_rows.append(val_pos)
 
-    train_df = pd.concat(train_rows)
-    val_df = pd.concat(val_rows) if val_rows else pd.DataFrame(columns=click_df.columns)
+    Optimized: sort once globally (by user then timestamp), then vectorized
+    cumulative-count to find split point — avoids per-group sort_values.
+    """
+    click_df = click_df.sort_values(['user_id', 'click_timestamp'])
+    # Build per-user cumulative count (finds split index without per-group loop)
+    user_groups = click_df.groupby('user_id', sort=False)
+    cumcounts = user_groups.cumcount()  # 0, 1, 2, ... within each user
+    counts = user_groups['click_timestamp'].transform('size')
+    split_point = (counts * split_ratio).astype(int).clip(lower=1)
+
+    # train_mask: rows where cumcount < split_point
+    train_mask = cumcounts < split_point
+    train_df = click_df[train_mask]
+
+    # val_mask: rows where cumcount >= split_point AND click_label == 1
+    val_mask = (cumcounts >= split_point) & (click_df.get('click_label', 1) == 1)
+    val_df = click_df[val_mask]
 
     print(f">>> Train: {len(train_df):,} interactions, {train_df['user_id'].nunique():,} users")
     print(f">>> Val:   {len(val_df):,} interactions (pos only), {val_df['user_id'].nunique():,} users")
@@ -46,14 +49,22 @@ def split_train_val(click_df, split_ratio=0.8):
 # ============================================================
 
 def _build_item_batch_for_indices(item_indices, item_features, device):
-    """向量化构建物品特征 batch — 避免逐行 .loc 循环"""
+    """向量化构建物品特征 batch — 避免逐行 .loc 循环 (支持扩展特征)"""
     subset = item_features.reindex(item_indices, fill_value=0)
-    return {
+    batch = {
         'item_id': torch.LongTensor(item_indices).to(device),
         'category_id': torch.LongTensor(subset['category_idx'].values.astype(int).copy()).to(device),
         'item_click_count': torch.FloatTensor(subset['item_click_count_norm'].values.copy()).to(device),
         'created_at_ts': torch.FloatTensor(subset['created_at_ts_norm'].values.copy()).to(device),
     }
+    # 扩展特征: brand + quality (仅在 DataFrame 中存在时添加)
+    if 'brand_idx' in item_features.columns:
+        batch['brand_id'] = torch.LongTensor(subset['brand_idx'].values.astype(int).copy()).to(device)
+    if 'item_avg_rating_norm' in item_features.columns:
+        batch['item_avg_rating'] = torch.FloatTensor(subset['item_avg_rating_norm'].values.copy()).to(device)
+    if 'item_rating_number_norm' in item_features.columns:
+        batch['item_rating_number'] = torch.FloatTensor(subset['item_rating_number_norm'].values.copy()).to(device)
+    return batch
 
 
 def compute_item_embeddings(model, num_items, item_features, device, batch_size=2048):
@@ -127,6 +138,8 @@ def evaluate_two_tower(model, val_df, train_df, user_features, item_features,
             'hist': row['hist_items_trunc'],
             'click_norm': row['click_count_norm'],
             'span_norm': row['time_span_norm'],
+            'avg_rating': float(row.get('user_avg_rating_norm', 0) or 0),
+            'std_rating': float(row.get('user_std_rating_norm', 0) or 0),
         }
 
     # 5. 逐用户评估
@@ -136,7 +149,7 @@ def evaluate_two_tower(model, val_df, train_df, user_features, item_features,
     for start in range(0, len(val_users), user_batch_size):
         chunk_users = val_users[start:start + user_batch_size]
         # 组装用户 batch
-        user_ids, histories, hist_lens, click_counts, time_spans = [], [], [], [], []
+        user_ids, histories, hist_lens, click_counts, time_spans, avg_ratings, std_ratings = [], [], [], [], [], [], []
         valid_users_in_chunk = []
         for raw_uid in chunk_users:
             feat = user_feat_dict.get(raw_uid)
@@ -160,6 +173,8 @@ def evaluate_two_tower(model, val_df, train_df, user_features, item_features,
             hist_lens.append(hl)
             click_counts.append(feat['click_norm'])
             time_spans.append(feat['span_norm'])
+            avg_ratings.append(feat['avg_rating'])
+            std_ratings.append(feat['std_rating'])
             valid_users_in_chunk.append(raw_uid)
 
         if not valid_users_in_chunk:
@@ -171,6 +186,8 @@ def evaluate_two_tower(model, val_df, train_df, user_features, item_features,
             'hist_len': torch.LongTensor(hist_lens).to(device),
             'click_count': torch.FloatTensor(click_counts).to(device),
             'time_span': torch.FloatTensor(time_spans).to(device),
+            'user_avg_rating': torch.FloatTensor(avg_ratings).to(device),
+            'user_std_rating': torch.FloatTensor(std_ratings).to(device),
         }
 
         with torch.no_grad():
@@ -257,6 +274,8 @@ def evaluate_two_tower_sampled(model, val_df, train_df, user_features, item_feat
             'hist': row['hist_items_trunc'],
             'click_norm': row['click_count_norm'],
             'span_norm': row['time_span_norm'],
+            'avg_rating': float(row.get('user_avg_rating_norm', 0) or 0),
+            'std_rating': float(row.get('user_std_rating_norm', 0) or 0),
         }
 
     # 预计算所有物品向量 (仍然需要, 但评估时只取 N+1 个)
@@ -293,6 +312,8 @@ def evaluate_two_tower_sampled(model, val_df, train_df, user_features, item_feat
             'hist_len': torch.LongTensor([hl]).to(device),
             'click_count': torch.FloatTensor([feat['click_norm']]).to(device),
             'time_span': torch.FloatTensor([feat['span_norm']]).to(device),
+            'user_avg_rating': torch.FloatTensor([feat['avg_rating']]).to(device),
+            'user_std_rating': torch.FloatTensor([feat['std_rating']]).to(device),
         }
 
         with torch.no_grad():

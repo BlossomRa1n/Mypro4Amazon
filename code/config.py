@@ -7,7 +7,8 @@ ROOT_PATH = os.path.dirname(curr_path)
 # Amazon Reviews 2023 — 数据集 & 路径配置
 # ============================================================
 
-DATA_PATH = os.path.join(ROOT_PATH, 'amazon_reviews')
+DATA_PATH = '/root/autodl-tmp/amazon_data'  # 服务器 autodl-tmp 数据盘
+# DATA_PATH = os.path.join(ROOT_PATH, 'amazon_reviews')  # 本地默认路径
 
 # --- 三档规模控制 ---
 # 档位 1 (本地验证): offline=True → 只看 10000 条
@@ -127,7 +128,9 @@ ALS_FIX_EMBEDDINGS = False      # True=冻结 item_embedding 不训练
 # ============================================================
 # Extended DIN (All_Beauty Raw) Configuration
 # ============================================================
-EXT_CATEGORIES = ['All_Beauty']
+EXT_CATEGORIES = ['Video_Games']   # 服务器: 人均~8条, 5-core后~9万用户
+# EXT_CATEGORIES = ['Books']       # 海量数据, 需大内存
+# EXT_CATEGORIES = ['All_Beauty']  # 极稀疏, 5-core后仅240用户
 EXT_MIN_USER_INTER = 5           # 用户最少交互数 (5-core)
 EXT_MIN_ITEM_INTER = 5           # 商品最少交互数 (5-core)
 EXT_ENCODER_PKL = os.path.join(TMP_PATH, 'id_encoders_ext.pkl')

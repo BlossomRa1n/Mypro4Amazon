@@ -242,3 +242,143 @@
 **问题**: `evaluate.py` 独立运行时缺少 `import os`。
 
 **涉及文件**: `evaluate.py`
+
+
+# 2026-06-06 改动日志
+
+## 0. 全链路向量化性能优化 — 消除 6 大 Python for 循环瓶颈
+
+**问题**: 精排模型服务器端运行 `train_din_ext.py`，Step 2 `build_extended_item_features` 和 `build_extended_user_features` 卡死（175 万条交互、11 万件商品、3 万品牌），CPU 100% 但数分钟无进展。问题根源是 6 处`iterrows()` / `for i in range(len(df))` / `.loc[idx]` / `get_brand_idx()` 逐行 Python 函数调用，在高数据量下产生百万次解释器开销。
+
+**方案 — 6 处向量化重写**:
+
+| # | 函数 (文件) | 瓶颈 | 优化方案 |
+|---|---|---|---|
+| 1 | `prepare_click_df` (data_loader_ext) | `zip(*df['rating'].map(lambda ...))` 逐行 λ | `np.searchsorted` + 预建查找表，一次搞定 175 万行 |
+| 2 | `build_extended_item_features` (data_loader_ext) | 两个 `for i in range(len(meta_df))` + `.iloc[i]` 逐行取数，11 万项 × 2 | pandas `.loc` 布尔广播 + numpy 高级索引一步赋值 |
+| 3 | `build_extended_user_features` (data_loader_ext) | 每组 `sort_values`、每条记录 `get_brand_idx` O(3 万) 线性扫描、Python for 时间差 | 全局排序 + 预建 `item_to_brand_arr` O(1) 数组查表 + `np.diff` 向量化 |
+| 4 | `DINExtendedDataset.__init__` (data_loader_ext) | 3 个 `iterrows()`、11 万次 `.loc[idx]`、175 万次逐行负样本 `rng.integers` | DataFrame 列 `to_numpy` 直拷 + 负样本批量预采样 + 合并重复循环 |
+| 5 | `split_train_val` (evaluate.py) | 每组 `sort_values` + 逐个 `pd.concat` 拼接 | `cumcount` 分组计数器 + 批量 boolean mask，零 Python 循环 |
+| 6 | `evaluate_ext` (train_din_ext) | `iterrows` 遍历 user/item、每样本单次 tensor 拷贝、每用户重复序列 pad | `uid_to_idx` 数组直建 + 用户 tensor 预分配并复用 + 负样本批量 `randint` |
+
+**核心原则**: 所有逐行操作统一用 numpy/pandas 向量化操作（一次处理整列/整数组）替代 Python for 循环。175 万级数据量下，每个逐行操作都是百万次 Python 函数调用开销，全部消除后预计启动速度从数分钟降到数秒。
+
+**涉及文件**: `code/data_loader_ext.py`, `code/train_din_ext.py`, `code/evaluate.py`
+
+
+## 1. Video_Games 首次训练 — BPR Loss 坍缩 & 随机负样本失效
+
+**数据规模**: Video_Games raw JSONL (2.5GB review + 418MB meta) → `EXT_MIN_USER_INTER=5` / `EXT_MIN_ITEM_INTER=5` 过滤后 92,498 用户 / 23,122 商品 / 5,874 品牌 / 1,858 BPR batches
+
+**训练结果**:
+
+| Epoch | Train Loss | Val AUC | Pos Mean |
+|---|---|---|---|
+| 1 | 0.0235 | 0.5719 | 0.4121 |
+| 2 | 0.0002 | 0.4979 | 0.3669 |
+| 3 | 0.0001 | 0.6167 | 0.4042 |
+| 4 | ~0 | 0.5978 | 0.3794 |
+| **5** | **~0** | **0.8695** | **0.4548** |
+| 6 | ~0 | 0.6082 | 0.2014 |
+| 7 | ~0 | 0.7950 | 0.2809 |
+| 8 | ~0 | 0.6033 | 0.3384 |
+| 9 | ~0 | 0.5892 | 0.2711 |
+| 10 | ~0 | 0.5553 | 0.2020 |
+
+**诊断 — BPR Loss 坍缩**:
+- Loss 从 epoch 2 开始接近 0（~5e-5），模型几乎完美区分训练集正负样本
+- 但 Val AUC 剧烈震荡（0.50 → 0.87 → 0.55），从未稳定
+- Pos Mean 持续下降（0.45 → 0.20），模型对正样本越来越不自信
+
+**根因 — 随机负样本太容易区分**:
+Video_Games 23K 商品中随机采样的负样本与用户历史无任何相似性，模型学到的不是用户偏好信号，只是"正样本=历史里见过的"这个简单规则。训练集上几乎完美，但验证集完全无法泛化。
+
+**解决方向**: 需要 ItemCF Hard Negative Mining — 用与正样本 ItemCF 相似度高但用户未交互的商品作为负样本，强制模型学习细粒度的用户偏好区分。旧 DIN 管线 (`data_loader.py` 已实现 `build_hard_negative_index`) 但扩展 DIN 尚未集成。
+
+**涉及文件**: `code/data_loader_ext.py` (待修改), `code/train_din_ext.py`, `code/config.py` (切换品类), `run_ext_din.sh` (自动清理旧 checkpoint)
+
+
+## 2. 数据加载内存优化 — list-of-dicts → 类型化列数组
+
+**问题**: Books raw JSONL 20GB，原 `load_raw_reviews`/`load_raw_meta` 逐行构建 dict 再 `pd.DataFrame(list_of_dicts)` 导致峰值内存 = dict overhead（~2×） + DataFrame（~1×） = 同时占用 ~3× 数据量内存，32GB 服务器直接 OOM。
+
+**方案**: 改为 `zip(*all_rows)` 拆成 7 个类型化 Python list → `np.array` / `pd.array` 直接构造 DataFrame，构造后立即 `del` 中间列表。meta 同样改造，price 用 -1.0 替代 None 避免 object dtype。
+
+**效果**: 峰值内存减半（~15-20GB），Video_Games (2.5GB) 作为中间规模验证方案可行性。
+
+**涉及文件**: `code/data_loader_ext.py` — `load_raw_reviews()`, `load_raw_meta()`
+
+
+## 3. Hard Negative Mining 集成到扩展 DIN
+
+**问题**: Video_Games 首次训练 BPR Loss 坍缩 → Loss≈0, Val AUC 震荡, Pos Mean 持续下降。随机负样本与正样本无相似性，模型学到的是"正样本=历史见过"的平凡规则。
+
+**方案**:
+- `data_loader_ext.py` 新增 `build_hard_negative_index_ext()` — 从 ItemCF 相似度矩阵取 Top-K 相似但未交互商品，`heapq.nlargest` O(N log K) 替代全量 sort
+- `DINExtendedDataset.__init__` 新增 `hard_neg_index`/`num_hard_negatives` 参数 — 负样本采样流程改为 HardNeg 优先 → 不够补随机
+- `train_din_ext.py` 自动加载/构建 ItemCF 索引（首次运行时从 `click_df` 构建并缓存到 `ITEMCF_SIM_PKL`），传入 `build_hard_negative_index_ext` 和 `DINExtendedDataset`
+- `itemcf.py` 一并打包进压缩包（`itemcf_sim` 函数为依赖）
+
+**预期效果**: Hard Negative 强制模型学习细粒度偏好区分，类似旧 DIN 管线中 BPR+HardNeg 将 AUC 从 0.50 提升到 0.66 的效果。
+
+**涉及文件**: `code/data_loader_ext.py`, `code/train_din_ext.py`, `code/itemcf.py` (新纳入打包)
+
+
+## 4. Checkpoint 兼容性检查 & 品类切换防护
+
+**问题**: 
+1. 从 All_Beauty (240 用户) 切换到 Video_Games (92K 用户) 后，恢复旧 checkpoint 导致 `CUDA error: device-side assert triggered — index out of bounds`（Embedding 表尺寸不匹配）
+2. 上传新代码包后 config.py 路径被覆盖回默认值 `/root/amazon_reviews`，但服务器数据在 `/root/autodl-tmp/amazon_data`
+
+**方案**:
+- `train_din_ext.py` resume 时检查 `ckpt.num_users != current.num_users` → 自动重建模型 + optimizer + scheduler，清零 epoch/best_auc/patience
+- `run_ext_din.sh` 启动时自动清理所有旧 checkpoint（`din_ext_latest.pth`, `din_ext_best.pth`, `din_ext_history.json`, `checkpoints/din_ext_epoch*.pth`）+ encoder 缓存
+- `config.py` 中 `DATA_PATH` 硬编码为 `/root/autodl-tmp/amazon_data`（服务器数据盘），避免每次上传后被覆盖
+
+**涉及文件**: `code/train_din_ext.py`, `run_ext_din.sh`, `code/config.py`
+
+
+## 5. sklearn LabelEncoder NA TypeError 修复
+
+**问题**: Pandas `string` dtype 的 `<NA>` 值在 `meta_df['brand'].unique()` / `meta_df['main_category'].unique()` 时混入 `NAType`，导致 `LabelEncoder.fit()` 报 `TypeError: Encoders require their input argument must be uniformly strings or numbers. Got ['NAType', 'str']`
+
+**方案**: `build_extended_encoders` 中 brand 和 category 的 `unique()` 列表在传入 `LabelEncoder.fit()` 之前过滤 `str(x) != '<NA>'`。
+
+**涉及文件**: `code/data_loader_ext.py` — `build_extended_encoders()`
+
+
+## 6. 从 All_Beauty → Video_Games 品类切换
+
+**动机**: All_Beauty 人均 1.1 条交互，5-core 后仅 240 用户；DIN 论文使用 Electronics/Books（人均 8-12 条）。Video_Games 人均 ~8 条，5-core 后 ~92K 用户，规模适合当前实验。
+
+**涉及文件**: `code/config.py` — `EXT_CATEGORIES = ['Video_Games']`
+
+---
+
+## 7. Extended DIN 过拟合修复 — 三 Bug 合治
+
+**问题**: Video_Games 首次训练 train loss 从 epoch 2 归零，val AUC 剧烈震荡（0.50→0.87→0.55→0.32），Pos Mean 持续衰减。三个深层 bug：
+
+| Bug | 文件:行 | 问题 | 修复 |
+|---|---|---|---|
+| 数据泄露 | `train_din_ext.py:300` | `build_extended_*_features(click_df)` 用完整数据（含验证集）构建用户历史，验证集目标 item 直接出现在用户序列中 | 改为 `train_click` |
+| 品牌特征丢失 | `data_loader_ext.py:335` | `item_brand_arr` 分配后从未填充，所有 item brand_id=0，brand_embedding 全程为零 | 新增 `brand_map` + meta 散射填充 |
+| 困难负样本自毁 | `train_din_ext.py:305` | ItemCF 困难负样本 = 与历史相似但未点击的 item，BPR 教会模型抑制所有相似 item—验证正样本也在其中 | `USE_HARD_NEGATIVES=False` 关闭 |
+
+**效果**:
+
+| Epoch | Train Loss | Val AUC | Pos Mean |
+|---|---|---|---|
+| 1 | 0.0266 | 0.6485 | 0.4881 |
+| 2 | 0.0002 | 0.7224 | 0.4247 |
+| 3 | 0.0001 | 0.7363 | 0.2981 |
+| **4** | **0.0000** | **0.8498 ★** | **0.3710** |
+| 5 | 0.0001 | 0.4434 | 0.2669 |
+| 6 | 0.0000 | 0.5853 | 0.2512 |
+| 7 | 0.0000 | 0.3236 | 0.1832 |
+| 8 | 0.0000 | 0.4095 | 0.2335 |
+| 9 | 0.0000 | 0.7044 | 0.2841 |
+
+**诊断**: 数据泄露修复后 AUC 峰值 0.85（vs 修复前 0.50 均线），但 BPR loss 仍在 epoch 2-3 归零，AUC 在 epoch 4 后崩盘。BPR + 59M 参数 MLP = 天然记忆化倾向。下一步考虑 BCE 回归或更强的正则化（L2 weight decay、更强 dropout、梯度裁剪）。
+
+**涉及文件**: `code/train_din_ext.py`, `code/data_loader_ext.py`

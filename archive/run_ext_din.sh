@@ -1,19 +1,15 @@
 #!/bin/bash
 # ============================================================
-# Extended DIN 服务器一键运行脚本
-# Categories: reads from config.py EXT_CATEGORIES (currently Video_Games)
+# Extended DIN (All_Beauty raw) 服务器一键运行脚本
 # RTX 5070 32GB vGPU
 # ============================================================
 set -e
 
-# --- 0. 删除旧 checkpoint（切换品类/规模后可能不兼容）---
-echo ">>> Purging old checkpoints & encoder cache..."
-rm -f user_data/tmp_data/id_encoders_ext.pkl
-rm -f user_data/model_data/din_ext_latest.pth
-rm -f user_data/model_data/din_ext_best.pth
-rm -f user_data/model_data/din_ext_history.json
-rm -f user_data/model_data/checkpoints/din_ext_epoch*.pth
-echo ">>> Cleanup done."
+# --- 0. 删除 offline 模式残留缓存 ---
+if [ -f "user_data/tmp_data/id_encoders_ext.pkl" ]; then
+    echo ">>> Removing stale encoder cache from offline test..."
+    rm -f user_data/tmp_data/id_encoders_ext.pkl
+fi
 
 # --- 1. 准备目录 ---
 echo ">>> Creating directories..."
@@ -25,7 +21,6 @@ mkdir -p prediction_result
 echo ">>> Checking data files..."
 MISSING_COUNT=0
 for CAT in $(python -c "import sys; sys.path.insert(0, 'code'); from config import EXT_CATEGORIES; print(' '.join(EXT_CATEGORIES))"); do
-    # Resolve DATA_PATH from config so shell can check the right location
     DATA_DIR=$(python -c "import sys; sys.path.insert(0, 'code'); from config import DATA_PATH; print(DATA_PATH)")
     REVIEW_PATH="$DATA_DIR/raw/review_categories/${CAT}.jsonl"
     META_PATH="$DATA_DIR/raw/meta_categories/meta_${CAT}.jsonl"

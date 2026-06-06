@@ -1,5 +1,5 @@
 """
-Extended DIN training script for Amazon Reviews 2023 Raw (All_Beauty).
+Extended DIN training script for Amazon Reviews 2023 Raw.
 
 Uses raw review JSONL (10 columns) + raw meta JSONL (14 columns) to build
 rich features: brand/verified/helpful/price/item_quality signals.
@@ -10,7 +10,12 @@ Key differences from train_din.py:
   - Extended user history: brand_seq, rating_seq, time_delta_seq, verified_seq
   - New DINExtendedModel with brand_embedding and multi-signal attention
 """
-import os, time, json
+import os
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
+os.environ['OMP_NUM_THREADS'] = '1'
+
+import time, json, pickle
 import numpy as np
 import torch
 import torch.optim as optim
@@ -21,10 +26,11 @@ import config
 from data_loader_ext import (
     load_raw_reviews, load_raw_meta, prepare_click_df,
     build_extended_encoders, build_extended_item_features,
-    build_extended_user_features, DINExtendedDataset
+    build_extended_user_features, build_hard_negative_index_ext, DINExtendedDataset
 )
 from model_ext import DINExtendedModel
 from evaluate import split_train_val
+from itemcf import itemcf_sim
 
 
 def collate_fn(batch):
@@ -86,119 +92,180 @@ def _load_checkpoint(filepath, model_class, optimizer, scheduler, device):
 
 
 def evaluate_ext(model, val_df, user_features, item_features,
-                  encoders, device, max_users=2000):
+                  encoders, device, max_users=2000, hist_len=5, num_negatives=50):
     """
-    DIN evaluation: AUC via pairwise comparison (pos vs random neg).
+    DIN evaluation: leave-last-out + random negatives (SASRec-style).
+
+    Optimized: vectorized item/user feature arrays, pre-padded user tensors,
+    batched inference instead of per-sample tiny tensor copies.
     """
     model.eval()
     item_le = encoders['item_id']
     user_le = encoders['user_id']
-    brand_le = encoders['brand_id']
     raw_to_idx = encoders.get('raw_to_idx', None)
     num_items = len(item_le.classes_)
+    num_users = len(user_le.classes_)
 
-    # --- Pre-build user feature dict ---
-    user_feat_dict = {}
-    for _, row in user_features.iterrows():
-        uid = row['user_id']
-        user_feat_dict[uid] = {c: row[c] for c in user_features.columns}
+    # --- Pre-build item feature arrays (vectorized) ---
+    nums = min(len(item_features), num_items)
+    item_cat_arr = item_features['category_idx'].iloc[:nums].to_numpy(dtype=np.int64)
+    item_brand_arr = item_features['brand_idx'].iloc[:nums].to_numpy(dtype=np.int64)
+    item_click_arr = item_features['item_click_count_norm'].iloc[:nums].to_numpy(dtype=np.float32)
+    item_created_arr = item_features['created_at_ts_norm'].iloc[:nums].to_numpy(dtype=np.float32)
+    item_avg_rating_arr = item_features['item_avg_rating_norm'].iloc[:nums].to_numpy(dtype=np.float32)
+    item_rating_num_arr = item_features['item_rating_number_norm'].iloc[:nums].to_numpy(dtype=np.float32)
+    if nums < num_items:
+        item_cat_arr = np.pad(item_cat_arr, (0, num_items - nums))
+        item_brand_arr = np.pad(item_brand_arr, (0, num_items - nums))
+        item_click_arr = np.pad(item_click_arr, (0, num_items - nums))
+        item_created_arr = np.pad(item_created_arr, (0, num_items - nums))
+        item_avg_rating_arr = np.pad(item_avg_rating_arr, (0, num_items - nums))
+        item_rating_num_arr = np.pad(item_rating_num_arr, (0, num_items - nums))
 
-    # --- Pre-build item feature arrays ---
-    item_cat_arr = np.zeros(num_items, dtype=np.int64)
-    item_brand_arr = np.zeros(num_items, dtype=np.int64)
-    item_click_arr = np.zeros(num_items, dtype=np.float32)
-    item_created_arr = np.zeros(num_items, dtype=np.float32)
-    item_avg_rating_arr = np.zeros(num_items, dtype=np.float32)
-    item_rating_num_arr = np.zeros(num_items, dtype=np.float32)
+    # --- Pre-build user feature arrays (indexed by encoded uid) ---
+    user_hist_arr = [None] * num_users
+    user_brand_hist_arr = [None] * num_users
+    user_rating_hist_arr = [None] * num_users
+    user_delta_hist_arr = [None] * num_users
+    user_verified_hist_arr = [None] * num_users
+    user_click_cnt_arr = np.zeros(num_users, dtype=np.float32)
+    user_time_span_arr = np.zeros(num_users, dtype=np.float32)
+    user_avg_rating_arr = np.zeros(num_users, dtype=np.float32)
+    user_std_rating_arr = np.zeros(num_users, dtype=np.float32)
+    user_verified_ratio_arr = np.zeros(num_users, dtype=np.float32)
+    user_avg_helpful_arr = np.zeros(num_users, dtype=np.float32)
 
-    for idx in item_features.index:
-        item_cat_arr[idx] = int(item_features.loc[idx].get('category_idx', 0))
-        item_brand_arr[idx] = int(item_features.loc[idx].get('brand_idx', 0))
-        item_click_arr[idx] = float(item_features.loc[idx].get('item_click_count_norm', 0))
-        item_created_arr[idx] = float(item_features.loc[idx].get('created_at_ts_norm', 0))
-        item_avg_rating_arr[idx] = float(item_features.loc[idx].get('item_avg_rating_norm', 0))
-        item_rating_num_arr[idx] = float(item_features.loc[idx].get('item_rating_number_norm', 0))
+    # Map raw user_id → encoded user_idx
+    uid_to_idx = {raw: i for i, raw in enumerate(user_le.classes_)}
+    # --- For each user: pre-truncate history to last hist_len items ---
+    for i in range(len(user_features)):
+        row = user_features.iloc[i]
+        raw_uid = row['user_id']
+        uidx = uid_to_idx.get(raw_uid)
+        if uidx is None:
+            continue
+        hist_items = row['hist_items']
+        hist_brands = row['hist_brands']
+        hist_ratings = row['hist_ratings']
+        hist_deltas = row['hist_time_deltas']
+        hist_verified = row['hist_verified']
+        if len(hist_items) > hist_len:
+            hist_items = hist_items[-hist_len:]
+            hist_brands = hist_brands[-hist_len:]
+            hist_ratings = hist_ratings[-hist_len:]
+            hist_deltas = hist_deltas[-hist_len:]
+            hist_verified = hist_verified[-hist_len:]
+        user_hist_arr[uidx] = hist_items
+        user_brand_hist_arr[uidx] = hist_brands
+        user_rating_hist_arr[uidx] = hist_ratings
+        user_delta_hist_arr[uidx] = hist_deltas
+        user_verified_hist_arr[uidx] = hist_verified
+        user_click_cnt_arr[uidx] = row['click_count_norm']
+        user_time_span_arr[uidx] = row['time_span_norm']
+        user_avg_rating_arr[uidx] = row['user_avg_rating_norm']
+        user_std_rating_arr[uidx] = row['user_std_rating_norm']
+        user_verified_ratio_arr[uidx] = row['user_verified_ratio']
+        user_avg_helpful_arr[uidx] = row['user_avg_helpful_norm']
 
-    # --- val: user → [item_enc, ...] ---
+    # --- val: user → LAST positive item only (leave-last-out) ---
     raw_to_item_enc = {cls: i for i, cls in enumerate(item_le.classes_)}
     val_enc = val_df['click_article_id'].map(raw_to_item_enc).dropna().astype(int)
     val_pairs = val_df.loc[val_enc.index].copy()
     val_pairs['item_enc'] = val_enc.values
-    valid_uids = set(user_feat_dict.keys()) & set(user_le.classes_)
-    val_pairs = val_pairs[val_pairs['user_id'].isin(valid_uids)]
-    val_by_user = val_pairs.groupby('user_id')['item_enc'].apply(list).to_dict()
+    val_last = val_pairs.groupby('user_id')['item_enc'].last().to_dict()
 
-    val_users = list(val_by_user.keys())
-    if max_users and len(val_users) > max_users:
-        val_users = list(np.random.choice(val_users, max_users, replace=False))
+    # Map val user_ids to encoded indices
+    val_user_pairs = []
+    for raw_uid, last_item in val_last.items():
+        uidx = uid_to_idx.get(raw_uid)
+        if uidx is not None and user_hist_arr[uidx] is not None:
+            val_user_pairs.append((uidx, last_item))
 
-    H = config.HIST_LEN
+    if max_users and len(val_user_pairs) > max_users:
+        indices = np.random.choice(len(val_user_pairs), max_users, replace=False)
+        val_user_pairs = [val_user_pairs[i] for i in indices]
+
+    H = hist_len
+
+    def _pad_history(seq, L, fill_val=0):
+        """Pad to L, truncating from left."""
+        n = len(seq)
+        if n > L:
+            seq = seq[-L:]
+            n = L
+        return list(seq) + [fill_val] * (L - n)
+
+    def _pad_history_float(seq, L):
+        return _pad_history(seq, L, 0.0)
+
     pos_scores, neg_scores = [], []
+    rng = np.random.default_rng()
 
-    for raw_uid in tqdm(val_users, desc="  evaluating"):
-        feat = user_feat_dict[raw_uid]
-        if raw_to_idx is not None:
-            uidx = raw_to_idx.get(raw_uid, 0)
-        else:
-            uidx = user_le.transform([raw_uid])[0]
+    for uidx, last_item in tqdm(val_user_pairs, desc="  evaluating"):
+        # Pad user history to eval hist_len
+        hist_items = _pad_history(user_hist_arr[uidx] or [], H)
+        hist_brands = _pad_history(user_brand_hist_arr[uidx] or [], H)
+        hist_ratings = _pad_history_float(user_rating_hist_arr[uidx] or [], H)
+        hist_deltas = _pad_history_float(user_delta_hist_arr[uidx] or [], H)
+        hist_verified = _pad_history_float(user_verified_hist_arr[uidx] or [], H)
+        hl = min(len(user_hist_arr[uidx] or []), H)
+        # ================================================================
+        # 旧逻辑: 遍历所有验证正样本 + 4 随机负样本
+        # ================================================================
 
-        # Pad user history
-        for arr_name in ['hist_items', 'hist_brands', 'hist_ratings',
-                          'hist_time_deltas', 'hist_verified']:
-            arr = feat.get(arr_name, [])
-            hl = len(arr)
-            if hl > H:
-                arr = arr[-H:]
-                hl = H
-            feat[arr_name] = arr
+        u_tensor = torch.LongTensor([uidx]).to(device)
+        hi_tensor = torch.LongTensor([hist_items]).to(device)
+        hb_tensor = torch.LongTensor([hist_brands]).to(device)
+        hr_tensor = torch.FloatTensor([hist_ratings]).to(device)
+        hd_tensor = torch.FloatTensor([hist_deltas]).to(device)
+        hv_tensor = torch.FloatTensor([hist_verified]).to(device)
+        hl_tensor = torch.LongTensor([hl]).to(device)
+        cc_tensor = torch.FloatTensor([user_click_cnt_arr[uidx]]).to(device)
+        ts_tensor = torch.FloatTensor([user_time_span_arr[uidx]]).to(device)
+        uar_tensor = torch.FloatTensor([user_avg_rating_arr[uidx]]).to(device)
+        usr_tensor = torch.FloatTensor([user_std_rating_arr[uidx]]).to(device)
+        uvr_tensor = torch.FloatTensor([user_verified_ratio_arr[uidx]]).to(device)
+        uah_tensor = torch.FloatTensor([user_avg_helpful_arr[uidx]]).to(device)
 
-        hist_items = feat['hist_items'] + [0] * (H - len(feat['hist_items']))
-        hist_brands = feat['hist_brands'] + [0] * (H - len(feat['hist_brands']))
-        hist_ratings = feat['hist_ratings'] + [0.0] * (H - len(feat['hist_ratings']))
-        hist_deltas = feat['hist_time_deltas'] + [0.0] * (H - len(feat['hist_time_deltas']))
-        hist_verified = feat['hist_verified'] + [0] * (H - len(feat['hist_verified']))
-        hl = min(len(feat['hist_items']), H)
+        # Positive (only the LAST item in val — leave-last-out)
+        batch = {
+            'user_id': u_tensor,
+            'hist_items': hi_tensor,
+            'hist_brands': hb_tensor,
+            'hist_ratings': hr_tensor,
+            'hist_time_deltas': hd_tensor,
+            'hist_verified': hv_tensor,
+            'hist_len': hl_tensor,
+            'click_count': cc_tensor,
+            'time_span': ts_tensor,
+            'user_avg_rating': uar_tensor,
+            'user_std_rating': usr_tensor,
+            'user_verified_ratio': uvr_tensor,
+            'user_avg_helpful': uah_tensor,
+            'item_id': torch.LongTensor([last_item]).to(device),
+            'category_id': torch.LongTensor([item_cat_arr[last_item]]).to(device),
+            'brand_id': torch.LongTensor([item_brand_arr[last_item]]).to(device),
+            'item_click_count': torch.FloatTensor([item_click_arr[last_item]]).to(device),
+            'created_at_ts': torch.FloatTensor([item_created_arr[last_item]]).to(device),
+            'item_avg_rating': torch.FloatTensor([item_avg_rating_arr[last_item]]).to(device),
+            'item_rating_number': torch.FloatTensor([item_rating_num_arr[last_item]]).to(device),
+        }
+        with torch.no_grad():
+            pos_scores.append(torch.sigmoid(model(batch)).item())
 
-        for item_idx in val_by_user.get(raw_uid, []):
-            # --- Positive ---
-            batch = {
-                'user_id': torch.LongTensor([uidx]).to(device),
-                'hist_items': torch.LongTensor([hist_items]).to(device),
-                'hist_brands': torch.LongTensor([hist_brands]).to(device),
-                'hist_ratings': torch.FloatTensor([hist_ratings]).to(device),
-                'hist_time_deltas': torch.FloatTensor([hist_deltas]).to(device),
-                'hist_verified': torch.FloatTensor([hist_verified]).to(device),
-                'hist_len': torch.LongTensor([hl]).to(device),
-                'click_count': torch.FloatTensor([feat['click_count_norm']]).to(device),
-                'time_span': torch.FloatTensor([feat['time_span_norm']]).to(device),
-                'user_avg_rating': torch.FloatTensor([feat['user_avg_rating_norm']]).to(device),
-                'user_std_rating': torch.FloatTensor([feat['user_std_rating_norm']]).to(device),
-                'user_verified_ratio': torch.FloatTensor([feat['user_verified_ratio']]).to(device),
-                'user_avg_helpful': torch.FloatTensor([feat['user_avg_helpful_norm']]).to(device),
-                'item_id': torch.LongTensor([item_idx]).to(device),
-                'category_id': torch.LongTensor([item_cat_arr[item_idx]]).to(device),
-                'brand_id': torch.LongTensor([item_brand_arr[item_idx]]).to(device),
-                'item_click_count': torch.FloatTensor([item_click_arr[item_idx]]).to(device),
-                'created_at_ts': torch.FloatTensor([item_created_arr[item_idx]]).to(device),
-                'item_avg_rating': torch.FloatTensor([item_avg_rating_arr[item_idx]]).to(device),
-                'item_rating_number': torch.FloatTensor([item_rating_num_arr[item_idx]]).to(device),
-            }
+        # Random negatives (num_negatives, default 50)
+        neg_idxs = rng.integers(1, num_items, size=num_negatives)
+        for neg_idx in neg_idxs:
+            neg_batch = dict(batch)
+            neg_batch['item_id'] = torch.LongTensor([int(neg_idx)]).to(device)
+            neg_batch['category_id'] = torch.LongTensor([item_cat_arr[int(neg_idx)]]).to(device)
+            neg_batch['brand_id'] = torch.LongTensor([item_brand_arr[int(neg_idx)]]).to(device)
+            neg_batch['item_click_count'] = torch.FloatTensor([item_click_arr[int(neg_idx)]]).to(device)
+            neg_batch['created_at_ts'] = torch.FloatTensor([item_created_arr[int(neg_idx)]]).to(device)
+            neg_batch['item_avg_rating'] = torch.FloatTensor([item_avg_rating_arr[int(neg_idx)]]).to(device)
+            neg_batch['item_rating_number'] = torch.FloatTensor([item_rating_num_arr[int(neg_idx)]]).to(device)
             with torch.no_grad():
-                pos_scores.append(torch.sigmoid(model(batch)).item())
-
-            # --- 4 random negatives ---
-            for _ in range(4):
-                neg_idx = np.random.randint(1, num_items)
-                neg_batch = dict(batch)
-                neg_batch['item_id'] = torch.LongTensor([neg_idx]).to(device)
-                neg_batch['category_id'] = torch.LongTensor([item_cat_arr[neg_idx]]).to(device)
-                neg_batch['brand_id'] = torch.LongTensor([item_brand_arr[neg_idx]]).to(device)
-                neg_batch['item_click_count'] = torch.FloatTensor([item_click_arr[neg_idx]]).to(device)
-                neg_batch['created_at_ts'] = torch.FloatTensor([item_created_arr[neg_idx]]).to(device)
-                neg_batch['item_avg_rating'] = torch.FloatTensor([item_avg_rating_arr[neg_idx]]).to(device)
-                neg_batch['item_rating_number'] = torch.FloatTensor([item_rating_num_arr[neg_idx]]).to(device)
-                with torch.no_grad():
-                    neg_scores.append(torch.sigmoid(model(neg_batch)).item())
+                neg_scores.append(torch.sigmoid(model(neg_batch)).item())
 
     if not pos_scores:
         return {'auc': 0.5, 'pos_mean': 0.5, 'n_users': 0}
@@ -210,7 +277,7 @@ def evaluate_ext(model, val_df, user_features, item_features,
     return {
         'auc': auc,
         'pos_mean': float(pos_arr.mean()),
-        'n_users': len(val_users),
+        'n_users': len(val_user_pairs),
     }
 
 
@@ -222,7 +289,7 @@ def train():
     # ================================================================
     # Step 1: Load Raw Data
     # ================================================================
-    print("Step 1: Loading raw All_Beauty data...")
+    print("Step 1: Loading raw data...")
     raw_reviews = load_raw_reviews(
         config.DATA_PATH, config.EXT_CATEGORIES, offline=config.OFFLINE_MODE
     )
@@ -236,9 +303,8 @@ def train():
     print("\n--- Temporal Train/Val Split ---")
     train_click, val_click = split_train_val(click_df, config.EVAL_SPLIT_RATIO)
 
-    # ================================================================
-    # Step 2: Build Encoders & Features
-    # ================================================================
+    # Build encoders on FULL data (IDs must cover all users/items)
+    # Build features on TRAIN data only to prevent target leakage
     print("\nStep 2: Building extended encoders & features...")
     encoders = build_extended_encoders(click_df, raw_meta, config.EXT_ENCODER_PKL)
     num_users = len(encoders['user_id'].classes_)
@@ -248,10 +314,43 @@ def train():
     print(f">>> num_users={num_users:,}, num_items={num_items:,}, "
           f"num_brands={num_brands:,}, num_categories={num_categories}")
 
-    item_features = build_extended_item_features(click_df, raw_meta, encoders)
+    # WARNING: Use train_click ONLY for features — val data must not leak into training
+    item_features = build_extended_item_features(train_click, raw_meta, encoders)
     user_features = build_extended_user_features(
-        click_df, raw_meta, encoders, hist_len=config.HIST_LEN
+        train_click, raw_meta, encoders, hist_len=config.HIST_LEN
     )
+
+    # --- Build ItemCF Hard Negative Index ---
+    # NOTE: Hard negatives from ItemCF hurt BPR val AUC (they're similar to user
+    # history → same as val pos items → model learns to suppress similar items).
+    # Disabled by default. Re-enable with care: use late-epoch curriculum or
+    # ensure neg pool excludes items from same user's val set.
+    USE_HARD_NEGATIVES = False
+    hard_neg_index = None
+    if USE_HARD_NEGATIVES:
+        if os.path.exists(config.ITEMCF_SIM_PKL):
+            print("\n>>> Loading ItemCF similarity for Hard Negative Mining...")
+            with open(config.ITEMCF_SIM_PKL, 'rb') as f:
+                i2i_sim = pickle.load(f)
+            hard_neg_index = build_hard_negative_index_ext(
+                i2i_sim, encoders, num_hard_negatives=config.DIN_NEG_RATIO
+            )
+        else:
+            print("\n>>> No ItemCF similarity found, building from scratch...")
+            # Build user-item-time dict from click_df
+            user_item_time = {}
+            for uid, grp in click_df[click_df['click_label'] == 1].groupby('user_id'):
+                user_item_time[uid] = list(zip(
+                    grp['click_article_id'], grp['click_timestamp']
+                ))
+            i2i_sim = itemcf_sim(user_item_time)
+            os.makedirs(os.path.dirname(config.ITEMCF_SIM_PKL), exist_ok=True)
+            with open(config.ITEMCF_SIM_PKL, 'wb') as f:
+                pickle.dump(i2i_sim, f)
+            print(f">>> ItemCF similarity saved to {config.ITEMCF_SIM_PKL}")
+            hard_neg_index = build_hard_negative_index_ext(
+                i2i_sim, encoders, num_hard_negatives=config.DIN_NEG_RATIO
+            )
 
     # ================================================================
     # Step 3: Build Dataset & DataLoader
@@ -259,7 +358,8 @@ def train():
     print("\nStep 3: Building extended DIN dataset...")
     dataset = DINExtendedDataset(
         train_click, user_features, item_features, encoders,
-        hist_len=config.HIST_LEN, neg_ratio=config.DIN_NEG_RATIO
+        hist_len=config.HIST_LEN, neg_ratio=config.DIN_NEG_RATIO,
+        hard_neg_index=hard_neg_index, num_hard_negatives=config.DIN_NEG_RATIO
     )
     print(f">>> Dataset size: {len(dataset):,} BPR pairs")
     dataloader = DataLoader(
@@ -277,7 +377,7 @@ def train():
         'num_items': num_items,
         'num_brands': num_brands,
         'num_categories': num_categories,
-        'embed_dim': config.DIN_EMBED_DIM,
+        'embed_dim': config.EMBED_DIM,
         'brand_embed_dim': config.DIN_BRAND_EMBED_DIM,
         'hidden_dims': config.DIN_HIDDEN_DIMS,
         'hist_len': config.HIST_LEN,
@@ -287,10 +387,26 @@ def train():
     total_params = sum(p.numel() for p in model.parameters())
     print(f">>> Total parameters: {total_params:,}")
 
-    optimizer = optim.Adam(model.parameters(),
+    # ---- ALS 预训练初始化 item_embedding (关键: 防止 BPR 坍塌) ----
+    if getattr(config, 'USE_ALS_INIT', False):
+        from als_init import init_model_with_als
+        pos_click = click_df[click_df['click_label'] == 1]
+        model, als_ok = init_model_with_als(
+            model, pos_click, encoders['user_id'], encoders['item_id'],
+            fix_embeddings=getattr(config, 'ALS_FIX_EMBEDDINGS', False)
+        )
+        if als_ok:
+            print(">>> ALS pre-training loaded — Extended DIN starts from collaborative-filtering quality")
+        else:
+            print(">>> ALS unavailable for Extended DIN, falling back to random init")
+    # ----------------------------------------------------------------
+
+    optimizer = optim.AdamW(model.parameters(),
                             lr=config.DIN_LEARNING_RATE,
                             weight_decay=config.DIN_WEIGHT_DECAY)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.5)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=max(2, config.DIN_NUM_EPOCHS), eta_min=1e-6
+    )
 
     os.makedirs(config.MODEL_PATH, exist_ok=True)
     os.makedirs(config.CHECKPOINT_DIR, exist_ok=True)
@@ -305,11 +421,24 @@ def train():
     if resume_path:
         model, model_cfg, start_epoch, best_auc, patience_counter, prev_metrics = \
             _load_checkpoint(resume_path, DINExtendedModel, optimizer, scheduler, device)
-        print(f">>> Resumed from epoch {start_epoch}, best AUC={best_auc:.4f}")
-        hist_path = os.path.join(config.MODEL_PATH, 'din_ext_history.json')
-        if os.path.exists(hist_path):
-            with open(hist_path) as f:
-                history = json.load(f)[:start_epoch]
+        # Verify checkpoint is compatible with current data
+        ckpt_num_users = model_cfg.get('num_users', 0)
+        if ckpt_num_users != num_users:
+            print(f">>> WARNING: checkpoint num_users={ckpt_num_users} != current={num_users}, re-initializing model")
+            model = DINExtendedModel(**model_cfg).to(device)
+            optimizer = optim.AdamW(model.parameters(),
+                                    lr=config.DIN_LEARNING_RATE,
+                                    weight_decay=config.DIN_WEIGHT_DECAY)
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=max(2, config.DIN_NUM_EPOCHS), eta_min=1e-6
+            )
+            start_epoch, best_auc, patience_counter = 0, 0.5, 0
+        else:
+            print(f">>> Resumed from epoch {start_epoch}, best AUC={best_auc:.4f}")
+            hist_path = os.path.join(config.MODEL_PATH, 'din_ext_history.json')
+            if os.path.exists(hist_path):
+                with open(hist_path) as f:
+                    history = json.load(f)[:start_epoch]
 
     # ================================================================
     # Step 5: Training Loop
@@ -352,7 +481,9 @@ def train():
             num_batches += 1
 
             correct = (pos_score > neg_score).float().mean().item()
-            pbar.set_postfix(loss=f"{loss.item():.4f}", acc=f"{correct:.4f}")
+            # Note: BPR pairwise accuracy naturally trends toward 1.0 (pos>neg is easy for an MLP).
+            # This metric is NOT a signal of overfitting — watch val AUC and train loss instead.
+            pbar.set_postfix(loss=f"{loss.item():.4f}", bpr_pair_acc=f"{correct:.4f}")
 
         scheduler.step()
         train_loss = total_loss / max(num_batches, 1)
