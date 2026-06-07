@@ -1,14 +1,10 @@
 """
-Extended DIN training script for Amazon Reviews 2023 Raw.
+Extended DIN training script for Amazon Reviews 2023 Raw (BPR pairwise).
 
-Uses raw review JSONL (10 columns) + raw meta JSONL (14 columns) to build
-rich features: brand/verified/helpful/price/item_quality signals.
-
-Key differences from train_din.py:
-  - Loads raw JSONL data instead of rating-only CSV
-  - Extended features: brand, verified_purchase, item_avg_rating, etc.
-  - Extended user history: brand_seq, rating_seq, time_delta_seq, verified_seq
-  - New DINExtendedModel with brand_embedding and multi-signal attention
+Data: raw review JSONL + meta JSONL (brand/verified/helpful/price/quality).
+Model: DINExtendedModel — Dense + Sequence (DIN Target Attention).
+Metrics: leave-last-out pairwise AUC (hist_len=5, 50 random negatives).
+Loss: BPR (Bayesian Personalized Ranking) with AdamW + CosineAnnealingLR.
 """
 import os
 os.environ['OPENBLAS_NUM_THREADS'] = '1'
@@ -23,10 +19,11 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 import config
+from data_loader import get_all_click_df
 from data_loader_ext import (
-    load_raw_reviews, load_raw_meta, prepare_click_df,
-    build_extended_encoders, build_extended_item_features,
-    build_extended_user_features, build_hard_negative_index_ext, DINExtendedDataset
+    load_raw_meta, build_extended_encoders, build_extended_item_features,
+    build_extended_user_features, build_hard_negative_index_ext, DINExtendedDataset,
+    merge_jsonl_features,
 )
 from model_ext import DINExtendedModel
 from evaluate import split_train_val
@@ -96,8 +93,20 @@ def evaluate_ext(model, val_df, user_features, item_features,
     """
     DIN evaluation: leave-last-out + random negatives (SASRec-style).
 
-    Optimized: vectorized item/user feature arrays, pre-padded user tensors,
-    batched inference instead of per-sample tiny tensor copies.
+    For each user, we take the LAST positive item in the validation set
+    as the target, then score it against num_negatives random items that
+    the user has not interacted with.  AUC (pairwise) is the fraction
+    of (positive, negative) pairs where the positive item is scored higher
+    than the randomly-sampled negative.
+
+    This is NOT a standard ROC AUC — it's an adapted pairwise metric
+    that directly answers "can the model rank the one true next item
+    above random impostors?" and is directly comparable to the numbers
+    reported in the SASRec literature.
+
+    Key parameters:
+      - hist_len=5:  truncate user history to last 5 items (SASRec convention)
+      - num_negatives=50:  default from the SASRec paper
     """
     model.eval()
     item_le = encoders['item_id']
@@ -278,6 +287,8 @@ def evaluate_ext(model, val_df, user_features, item_features,
         'auc': auc,
         'pos_mean': float(pos_arr.mean()),
         'n_users': len(val_user_pairs),
+        'hist_len': hist_len,
+        'num_negatives': num_negatives,
     }
 
 
@@ -287,18 +298,13 @@ def train():
     print(f">>> Using device: {device}")
 
     # ================================================================
-    # Step 1: Load Raw Data
+    # Step 1: Load Data (CSV 5-core + raw_meta brand)
     # ================================================================
-    print("Step 1: Loading raw data...")
-    raw_reviews = load_raw_reviews(
-        config.DATA_PATH, config.EXT_CATEGORIES, offline=config.OFFLINE_MODE
-    )
-    raw_meta = load_raw_meta(config.DATA_PATH, config.EXT_CATEGORIES)
-
-    # Prepare click_df with labels
-    click_df = prepare_click_df(raw_reviews,
-                                 min_user_inter=config.EXT_MIN_USER_INTER,
-                                 min_item_inter=config.EXT_MIN_ITEM_INTER)
+    print("Step 1: Loading data...")
+    click_df = get_all_click_df(config.DATA_PATH, offline=config.OFFLINE_MODE)
+    raw_meta = load_raw_meta(config.DATA_PATH, config.AMAZON_CATEGORIES)
+    # Merge JSONL extra features (verified/helpful) into CSV click_df
+    click_df = merge_jsonl_features(click_df, config.DATA_PATH, config.AMAZON_CATEGORIES)
 
     print("\n--- Temporal Train/Val Split ---")
     train_click, val_click = split_train_val(click_df, config.EVAL_SPLIT_RATIO)
@@ -363,7 +369,7 @@ def train():
     )
     print(f">>> Dataset size: {len(dataset):,} BPR pairs")
     dataloader = DataLoader(
-        dataset, batch_size=config.DIN_BATCH_SIZE, shuffle=True,
+        dataset, batch_size=config.BATCH_SIZE, shuffle=True,
         num_workers=config.NUM_WORKERS, collate_fn=collate_fn,
         persistent_workers=True,
     )
@@ -385,7 +391,15 @@ def train():
     }
     model = DINExtendedModel(**model_cfg).to(device)
     total_params = sum(p.numel() for p in model.parameters())
-    print(f">>> Total parameters: {total_params:,}")
+    print(f">>> Total params: {total_params:,} "
+          f"| embed={model_cfg['embed_dim']}d "
+          f"| brand_embed={model_cfg['brand_embed_dim']}d "
+          f"| hidden={model_cfg['hidden_dims']} "
+          f"| hist={model_cfg['hist_len']} "
+          f"| users={model_cfg['num_users']:,} "
+          f"| items={model_cfg['num_items']:,} "
+          f"| brands={model_cfg['num_brands']:,} "
+          f"| cats={model_cfg['num_categories']}")
 
     # ---- ALS 预训练初始化 item_embedding (关键: 防止 BPR 坍塌) ----
     if getattr(config, 'USE_ALS_INIT', False):
@@ -402,10 +416,10 @@ def train():
     # ----------------------------------------------------------------
 
     optimizer = optim.AdamW(model.parameters(),
-                            lr=config.DIN_LEARNING_RATE,
-                            weight_decay=config.DIN_WEIGHT_DECAY)
+                            lr=config.LEARNING_RATE,
+                            weight_decay=config.WEIGHT_DECAY)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=max(2, config.DIN_NUM_EPOCHS), eta_min=1e-6
+        optimizer, T_max=config.NUM_EPOCHS, eta_min=1e-6
     )
 
     os.makedirs(config.MODEL_PATH, exist_ok=True)
@@ -427,10 +441,10 @@ def train():
             print(f">>> WARNING: checkpoint num_users={ckpt_num_users} != current={num_users}, re-initializing model")
             model = DINExtendedModel(**model_cfg).to(device)
             optimizer = optim.AdamW(model.parameters(),
-                                    lr=config.DIN_LEARNING_RATE,
-                                    weight_decay=config.DIN_WEIGHT_DECAY)
+                                    lr=config.LEARNING_RATE,
+                                    weight_decay=config.WEIGHT_DECAY)
             scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=max(2, config.DIN_NUM_EPOCHS), eta_min=1e-6
+                optimizer, T_max=config.NUM_EPOCHS, eta_min=1e-6
             )
             start_epoch, best_auc, patience_counter = 0, 0.5, 0
         else:
@@ -446,7 +460,7 @@ def train():
     print(f"\nStep 5: Training extended DIN from epoch {start_epoch+1}...")
     best_epoch = start_epoch
 
-    for epoch in range(start_epoch, config.DIN_NUM_EPOCHS):
+    for epoch in range(start_epoch, config.NUM_EPOCHS):
         # --- Train ---
         model.train()
         total_loss = 0.0
@@ -459,7 +473,7 @@ def train():
         pos_keys = ['item_id', 'category_id', 'brand_id', 'item_click_count',
                      'created_at_ts', 'item_avg_rating', 'item_rating_number']
 
-        pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{config.DIN_NUM_EPOCHS}")
+        pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{config.NUM_EPOCHS}")
         for batch in pbar:
             batch = {k: v.to(device) for k, v in batch.items()}
 
@@ -474,6 +488,16 @@ def train():
 
             optimizer.zero_grad()
             loss.backward()
+            # NaN check before clipping
+            has_nan = False
+            for p in model.parameters():
+                if p.grad is not None and torch.isnan(p.grad).any():
+                    has_nan = True
+                    break
+            if has_nan:
+                print(f"  [WARN] NaN grad (loss={loss.item():.4f}), skipping batch")
+                optimizer.zero_grad()
+                continue
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
             optimizer.step()
 
@@ -487,13 +511,16 @@ def train():
 
         scheduler.step()
         train_loss = total_loss / max(num_batches, 1)
-        print(f"Epoch {epoch+1}/{config.DIN_NUM_EPOCHS} | Train Loss={train_loss:.4f}")
+        print(f"Epoch {epoch+1}/{config.NUM_EPOCHS} | Train Loss={train_loss:.4f}")
 
         # --- Validate ---
         if config.SKIP_EVAL:
-            metrics = {'auc': 0.5, 'pos_mean': 0.5, 'n_users': 0}
+            metrics = {
+                'auc': 0.5, 'pos_mean': 0.5, 'n_users': 0,
+                'hist_len': 5, 'num_negatives': 50,
+            }
         else:
-            print("  Running validation...")
+            print("  Running validation (leave-last-out, HL=5, 50neg, max_users=2,000)...")
             metrics = evaluate_ext(
                 model, val_click, user_features, item_features,
                 encoders, device, max_users=config.EVAL_MAX_USERS
@@ -501,7 +528,10 @@ def train():
 
         auc = metrics['auc']
         pos_mean = metrics['pos_mean']
-        print(f"  → Val AUC={auc:.4f} | Pos Mean={pos_mean:.4f} | Users={metrics['n_users']}")
+        print(f"  → Val AUC={auc:.4f}/{pos_mean:.4f} | "
+              f"Users={metrics['n_users']} | "
+              f"HL={metrics.get('hist_len', 5)} | "
+              f"Neg={metrics.get('num_negatives', 50)}")
 
         history.append({'epoch': epoch + 1, 'train_loss': train_loss,
                         'val_auc': auc, 'val_pos_mean': pos_mean})
@@ -551,9 +581,59 @@ def train():
     with open(history_path, 'w') as f:
         json.dump(history, f, indent=2)
 
+    # --- Save model config alongside history for reproducibility ---
+    cfg_dump = {
+        'model': 'DINExtendedModel',
+        'data': config.EXT_CATEGORIES,
+        'embed_dim': config.EMBED_DIM,
+        'brand_embed_dim': config.DIN_BRAND_EMBED_DIM,
+        'hidden_dims': config.DIN_HIDDEN_DIMS,
+        'hist_len': config.HIST_LEN,
+        'dropout': config.DIN_DROPOUT,
+        'lr': config.LEARNING_RATE,
+        'batch_size': config.BATCH_SIZE,
+        'weight_decay': config.WEIGHT_DECAY,
+        'num_epochs': config.NUM_EPOCHS,
+    }
+    cfg_path = os.path.join(config.MODEL_PATH, 'din_ext_config.json')
+    with open(cfg_path, 'w') as f:
+        json.dump(cfg_dump, f, indent=2)
+    print(f"\n>>> Model config saved to {cfg_path}")
+
+    # --- Dump final results summary ---
+    results_path = os.path.join(config.RESULT_PATH, 'din_ext_final_results.json')
+    os.makedirs(config.RESULT_PATH, exist_ok=True)
+    final_results = {
+        'model': 'DINExtendedModel',
+        'data': config.EXT_CATEGORIES,
+        'best_epoch': best_epoch,
+        'best_auc': best_auc,
+        'eval_protocol': 'leave-last-out, 50 random negatives (SASRec-style)',
+        'hyperparams': {
+            'embed_dim': config.EMBED_DIM,
+            'brand_embed_dim': config.DIN_BRAND_EMBED_DIM,
+            'hidden_dims': config.DIN_HIDDEN_DIMS,
+            'hist_len': config.HIST_LEN,
+            'dropout': config.DIN_DROPOUT,
+            'lr': config.LEARNING_RATE,
+            'batch_size': config.BATCH_SIZE,
+            'weight_decay': config.WEIGHT_DECAY,
+            'num_epochs': config.NUM_EPOCHS,
+        },
+        'history': history,
+    }
+    with open(results_path, 'w') as f:
+        json.dump(final_results, f, indent=2)
+    print(f"\n>>> Final results saved to {results_path}")
+
     print(f"\n{'='*60}")
-    print(f"Extended DIN training complete!")
+    print(f"DIN-Ext training complete!")
     print(f"  Best epoch: {best_epoch}, Best AUC={best_auc:.4f}")
+    print(f"  Data: {config.EXT_CATEGORIES} | LR={config.LEARNING_RATE} | "
+          f"Embed={config.EMBED_DIM}d | Batch={config.BATCH_SIZE} | "
+          f"HistLen={config.HIST_LEN} | Hidden={config.DIN_HIDDEN_DIMS}")
+    print(f"  BrandEmbed={config.DIN_BRAND_EMBED_DIM}d | Dropout={config.DIN_DROPOUT} | "
+          f"WD={config.WEIGHT_DECAY}")
     print(f"  Total time: {time.time() - start_time:.2f}s")
     print(f"{'='*60}")
 

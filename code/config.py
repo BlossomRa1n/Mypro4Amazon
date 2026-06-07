@@ -7,20 +7,15 @@ ROOT_PATH = os.path.dirname(curr_path)
 # Amazon Reviews 2023 — 数据集 & 路径配置
 # ============================================================
 
-DATA_PATH = '/root/autodl-tmp/amazon_data'  # 服务器 autodl-tmp 数据盘
-# DATA_PATH = os.path.join(ROOT_PATH, 'amazon_reviews')  # 本地默认路径
+# DATA_PATH = '/root/autodl-tmp/amazon_data'  # 服务器 autodl-tmp 数据盘
+DATA_PATH = os.path.join(ROOT_PATH, 'amazon_reviews')  # 本地默认路径
 
 # --- 三档规模控制 ---
 # 档位 1 (本地验证): offline=True → 只看 10000 条
 # 档位 2 (5060Ti): 3 品类全量 ~175 万条正反馈
 # 档位 3 (服务器): 追加更多品类到列表中
-AMAZON_CATEGORIES = [
-    'All_Beauty',             # 极稀疏, 5-core 后仅 253 用户 — 几乎不贡献用户但品类 Embedding 多一个值
-    'Video_Games',            # ~92K 用户, ~23K 商品, 人均 ~8
-    'CDs_and_Vinyl',          # ~123K 用户, ~88K 商品, 人均 ~12 — 最稠密
-]
-# 三品类混合: 品类 Embedding(3 个值有区分度) + 品类召回恢复有效
-# SASRec 论文对标: Beauty + Games (2014 版), 此处用 2023 版近似
+AMAZON_CATEGORIES = ['Video_Games']    # rating-only CSV (双塔召回训练)
+# 注意: EXT_CATEGORIES 应与 AMAZON_CATEGORIES 保持一致, 区别仅在于数据格式 (raw JSONL vs rating CSV)
 
 OFFLINE_MODE = False         # True: 每品类只读10000条; False: 全量
 AMAZON_SAMPLE_USERS = None    # 本地验证: 1000; 5060Ti: None
@@ -76,22 +71,19 @@ MIND_BATCH_SIZE = 512
 
 # --- DIN 精排模型配置 ---
 DIN_MODEL_FILE = os.path.join(MODEL_PATH, 'din_model.pth')
-DIN_EMBED_DIM = 256
 DIN_HIDDEN_DIMS = [256, 128, 64]
 DIN_DROPOUT = 0.1
-DIN_NUM_EPOCHS = 10          # 本地验证: 3; 正式训练: 10+
-DIN_LEARNING_RATE = 1e-3
-DIN_BATCH_SIZE = 1024
-DIN_WEIGHT_DECAY = 1e-5
-DIN_POS_WEIGHT = 4.0         # BCE 正样本权重: 负样本/正样本 ≈ 4, 防止"一律说不买"
+DIN_NEG_RATIO = 4              # BPR: 每正样本配 N 个负样本
+# (embed_dim → EMBED_DIM, lr → LEARNING_RATE, batch → BATCH_SIZE,
+#  weight_decay → WEIGHT_DECAY, num_epochs → NUM_EPOCHS)
 
 # --- 多路召回融合配置 ---
-RECALL_NUM = 50
+RECALL_NUM = 100
 RECALL_WEIGHTS = {
-    'itemcf': 1.0,        # ItemCF — 主力通道
-    'v2_sasrec': 0.0,     # V2 双塔关闭 (NDCG≈0.0056, 接近随机)
+    'itemcf': 1.2,        # ItemCF
+    'v2_sasrec': 2.2,     # V2 SASRec — 主力通道
     'v1_bpr': 0.0,        # V1 BPR 双塔关闭
-    'category': 0.5,      # 3 品类有区分度
+    'category': 0.5,
     'hot': 0.1,           # 兜底
 }
 
@@ -126,11 +118,9 @@ ALS_ALPHA = 10.0                # 置信度参数 (10.0 适合隐式反馈)
 ALS_FIX_EMBEDDINGS = False      # True=冻结 item_embedding 不训练
 
 # ============================================================
-# Extended DIN (All_Beauty Raw) Configuration
+# Extended DIN (Raw JSONL) Configuration
 # ============================================================
-EXT_CATEGORIES = ['Video_Games']   # 服务器: 人均~8条, 5-core后~9万用户
-# EXT_CATEGORIES = ['Books']       # 海量数据, 需大内存
-# EXT_CATEGORIES = ['All_Beauty']  # 极稀疏, 5-core后仅240用户
+EXT_CATEGORIES = ['Video_Games']  # raw JSONL (与 AMAZON_CATEGORIES 一致)
 EXT_MIN_USER_INTER = 5           # 用户最少交互数 (5-core)
 EXT_MIN_ITEM_INTER = 5           # 商品最少交互数 (5-core)
 EXT_ENCODER_PKL = os.path.join(TMP_PATH, 'id_encoders_ext.pkl')
