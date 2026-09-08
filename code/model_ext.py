@@ -1,5 +1,5 @@
 """
-Extended DIN Model for Amazon Reviews 2023 Raw (All_Beauty).
+Extended DIN Model for Amazon Reviews 2023 Raw.
 
 Architecture:
 ┌──────────────────────────────────────────────────────────────┐
@@ -266,7 +266,7 @@ class DINExtendedModel(nn.Module):
         logit = self.mlp(concat_features).squeeze(-1)
         return logit
 
-    # --- Public API (matches existing DINModel interface) ---
+    # --- Public API ---
 
     def forward(self, batch):
         """BCE pointwise scoring (for evaluation/prediction)."""

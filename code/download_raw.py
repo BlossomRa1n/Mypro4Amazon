@@ -3,7 +3,7 @@ Download Amazon Reviews 2023 raw data (review JSONL + meta JSONL) from HF Mirror
 With retry, resume, long timeout support, and configurable category.
 
 Usage:
-  # Download single category (default: All_Beauty)
+  # Download single category (default: Video_Games)
   python code/download_raw.py
 
   # Download multiple categories
@@ -16,7 +16,7 @@ Usage:
   python code/download_raw.py --category Video_Games --dry-run
 
   # Match your EXT_CATEGORIES config
-  python code/download_raw.py --categories All_Beauty,Video_Games,CDs_and_Vinyl
+  python code/download_raw.py --categories Video_Games,CDs_and_Vinyl
 """
 import os
 import sys
@@ -93,7 +93,8 @@ def download_file(url, dest, desc, max_retries=5):
             print(f"  ✓ {desc} complete ({downloaded + existing_size:,} bytes)")
             return dest
 
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError,
+                requests.exceptions.ChunkedEncodingError) as e:
             print(f"  ✗ Attempt {attempt+1}/{max_retries} failed: {e}")
             if attempt < max_retries - 1:
                 wait = (attempt + 1) * 30
@@ -121,15 +122,9 @@ def download_category(data_dir, category, skip_review=False, skip_meta=False,
         if dry_run:
             print(f"  [DRY-RUN] Would download review: {url}")
             print(f"            → {dest}")
-        elif os.path.exists(dest):
-            size = os.path.getsize(dest)
-            if size > 100_000:
-                print(f"  [SKIP] Review already exists: {dest} ({size:,} bytes)")
-            else:
-                print(f"  [RE-DOWNLOAD] {dest} too small ({size:,} bytes)")
-                os.remove(dest)
-                download_file(url, dest, f"{category} reviews")
         else:
+            # 无条件走 download_file: 内部用 Range 续传 (206) / 完整跳过 (416)。
+            # 不能按 size 阈值跳过 — 断点残片 (如 90MB/1.46GB) 会误判为完整。
             print(f"  [DOWNLOAD] {url}")
             download_file(url, dest, f"{category} reviews")
 
@@ -140,8 +135,6 @@ def download_category(data_dir, category, skip_review=False, skip_meta=False,
         if dry_run:
             print(f"  [DRY-RUN] Would download meta: {url}")
             print(f"            → {dest}")
-        elif os.path.exists(dest) and os.path.getsize(dest) > 10_000:
-            print(f"  [SKIP] Meta already exists: {dest} ({os.path.getsize(dest):,} bytes)")
         else:
             print(f"  [DOWNLOAD] {url}")
             download_file(url, dest, f"{category} meta")
@@ -154,7 +147,7 @@ def main():
     parser.add_argument("--data-dir", default="amazon_reviews",
                         help="Root data directory (default: amazon_reviews)")
     parser.add_argument("--category", default=None,
-                        help="Single category to download (default: All_Beauty)")
+                        help="Single category to download (default: Video_Games)")
     parser.add_argument("--categories", default=None,
                         help="Comma-separated list of categories, e.g. 'Video_Games,CDs_and_Vinyl'")
     parser.add_argument("--meta-format", choices=["jsonl", "parquet", "both"], default="jsonl")
@@ -172,7 +165,7 @@ def main():
     elif args.category:
         categories = [args.category]
     else:
-        categories = ["All_Beauty"]
+        categories = ["Video_Games"]
 
     data_dir = os.path.abspath(args.data_dir)
     os.makedirs(data_dir, exist_ok=True)

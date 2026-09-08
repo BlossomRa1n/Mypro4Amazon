@@ -30,3 +30,15 @@ env/
 .DS_Store
 Thumbs.db
 config.py
+
+# --- 个人/临时文件 (面试笔记、模型转储、练习代码, 不上传) ---
+interview_*.md
+tmp4data/
+archive/
+代码练习/
+fig*.png
+matlab_bandlimit_demo.m
+find_longest_brand.py
+strip_images.py
+smoke_test.py
+diagnose_encoder.py

@@ -1,150 +1,194 @@
-"""End-to-end smoke test for Extended DIN pipeline (All_Beauty raw data)."""
+"""Full pipeline smoke test (V2 SASRec → Extended DIN)."""
 import sys, os, time
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'code'))
+
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
 import torch
 
 import config
-from data_loader_ext import (
-    load_raw_reviews, load_raw_meta, prepare_click_df,
-    build_extended_encoders, build_extended_item_features,
-    build_extended_user_features, DINExtendedDataset
-)
-from model_ext import DINExtendedModel
-from evaluate import split_train_val
+
+# Override config for local offline smoke test
+config.OFFLINE_MODE = True
+config.SKIP_EVAL = True
+config.AMAZON_CATEGORIES = ['Video_Games']
+config.EXT_CATEGORIES = ['Video_Games']
+
+# Auto-detect local data path (config defaults to server /root/autodl-tmp)
+import os as _os
+if not _os.path.exists(config.DATA_PATH):
+    config.DATA_PATH = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), 'amazon_reviews')
+    print(f'[Auto-detect] DATA_PATH → {config.DATA_PATH}')
+
+
+def step(label, fn):
+    print(); print('=' * 60)
+    print(f'STEP: {label}')
+    print('=' * 60)
+    t0 = time.time()
+    result = fn()
+    print(f'  Time: {time.time()-t0:.1f}s')
+    return result
+
 
 def main():
     t_total = time.time()
 
     # ============================================================
-    # Step 1: Load raw data
+    # Step 1: Load benchmark CSV + raw meta
     # ============================================================
-    print('=' * 60)
-    print('STEP 1: Load raw data (offline mode)')
-    print('=' * 60)
-    t0 = time.time()
-    reviews = load_raw_reviews(config.DATA_PATH, config.EXT_CATEGORIES, offline=True)
-    meta = load_raw_meta(config.DATA_PATH, config.EXT_CATEGORIES)
-    print(f'  Reviews: {len(reviews):,} rows, {reviews.user_id.nunique():,} users, '
-          f'{reviews.parent_asin.nunique():,} items')
-    print(f'  Meta: {len(meta):,} items, {meta.brand.nunique():,} brands')
-    print(f'  Time: {time.time()-t0:.1f}s')
+    def load_data():
+        from data_loader import get_all_click_df, load_articles
+        from data_loader_ext import load_raw_meta
 
-    # Step 1b: Prepare click df
-    t0 = time.time()
-    click = prepare_click_df(reviews, min_user_inter=2, min_item_inter=2)
-    train_click, val_click = split_train_val(click, 0.8)
-    print(f'  Click: {len(click):,} rows → train={len(train_click):,}, val={len(val_click):,}')
-    print(f'  Time: {time.time()-t0:.1f}s')
+        click_df = get_all_click_df(config.DATA_PATH, offline=True)
+        articles_df = load_articles(config.DATA_PATH)
+        raw_meta = load_raw_meta(config.DATA_PATH, config.EXT_CATEGORIES)
+        print(f'  CSV: {len(click_df):,} rows | '
+              f'Articles: {len(articles_df):,} | '
+              f'Meta: {len(raw_meta):,} (brands={raw_meta.brand.nunique():,})')
+        return click_df, articles_df, raw_meta
+
+    click_df, articles_df, raw_meta = step('Load benchmark CSV + raw meta', load_data)
 
     # ============================================================
-    # Step 2: Build encoders & features
+    # Step 2: Build encoders + features (ext)
     # ============================================================
-    print()
-    print('=' * 60)
-    print('STEP 2: Build encoders & features')
-    print('=' * 60)
-    t0 = time.time()
+    def build_features():
+        from evaluate import split_train_val
+        from data_loader import build_encoders, build_enhanced_user_features
+        from data_loader_ext import build_extended_encoders, build_extended_item_features
 
-    # Clear cache for fresh test
-    if os.path.exists(config.EXT_ENCODER_PKL):
-        os.remove(config.EXT_ENCODER_PKL)
+        train_click, val_click = split_train_val(click_df, 0.8)
 
-    encoders = build_extended_encoders(click, meta, config.EXT_ENCODER_PKL)
-    nu = len(encoders['user_id'].classes_)
-    ni = len(encoders['item_id'].classes_)
-    nb = len(encoders['brand_id'].classes_)
-    nc = len(encoders['category_id'].classes_)
-    print(f'  Users={nu:,}, Items={ni:,}, Brands={nb:,}, Categories={nc}')
+        # V1/V2 encoders (from benchmark CSV)
+        if os.path.exists(config.ENCODER_PKL):
+            os.remove(config.ENCODER_PKL)
+        encoders = build_encoders(click_df, articles_df, config.ENCODER_PKL)
 
-    item_feat = build_extended_item_features(click, meta, encoders)
-    print(f'  Item features: {item_feat.shape}')
-    user_feat = build_extended_user_features(click, meta, encoders, hist_len=50)
-    print(f'  User features: {user_feat.shape}')
-    print(f'  Time: {time.time()-t0:.1f}s')
+        # Extended encoders (with brand from raw meta)
+        if os.path.exists(config.EXT_ENCODER_PKL):
+            os.remove(config.EXT_ENCODER_PKL)
+        ext_encoders = build_extended_encoders(click_df, raw_meta, config.EXT_ENCODER_PKL)
 
-    # ============================================================
-    # Step 3: Build dataset
-    # ============================================================
-    print()
-    print('=' * 60)
-    print('STEP 3: Build dataset')
-    print('=' * 60)
-    t0 = time.time()
-    ds = DINExtendedDataset(train_click, user_feat, item_feat, encoders,
-                             hist_len=50, neg_ratio=2)
-    print(f'  Dataset: {len(ds):,} BPR pairs')
-    sample = ds[0]
-    for k, v in sample.items():
-        if isinstance(v, torch.Tensor):
-            print(f'    {k:30s} shape={list(v.shape)}')
-    print(f'  Time: {time.time()-t0:.1f}s')
+        nu = len(encoders['user_id'].classes_)
+        ni = len(encoders['item_id'].classes_)
+        nc = len(ext_encoders['category_id'].classes_)
+        nb = len(ext_encoders['brand_id'].classes_)
+        print(f'  Users={nu:,} Items={ni:,} Categories={nc} Brands={nb}')
 
-    # ============================================================
-    # Step 4: Model forward + backward
-    # ============================================================
-    print()
-    print('=' * 60)
-    print('STEP 4: Model forward + backward')
-    print('=' * 60)
-    t0 = time.time()
+        # Features
+        item_features = build_extended_item_features(train_click, raw_meta, ext_encoders)
+        user_features_v2 = build_enhanced_user_features(
+            train_click[train_click['click_label'] == 1], articles_df, encoders, hist_len=config.HIST_LEN
+        )
+        # Merge user rating stats into V2
+        pos_click = train_click[train_click['click_label'] == 1]
+        stats = pos_click.groupby('user_id')['rating'].agg(['mean', 'std']).fillna(0)
+        stats.columns = ['user_avg_rating', 'user_std_rating']
+        stats = stats.reset_index()
+        stats['user_avg_rating_norm'] = stats['user_avg_rating'] / 5.0
+        stats['user_std_rating_norm'] = (stats['user_std_rating'] / 2.0).clip(0, 1)
+        user_features_v2 = user_features_v2.merge(
+            stats[['user_id', 'user_avg_rating_norm', 'user_std_rating_norm']],
+            on='user_id', how='left'
+        ).fillna(0)
 
-    model = DINExtendedModel(nu, ni, nb, nc, embed_dim=64, brand_embed_dim=32,
-                             hidden_dims=[128, 64], hist_len=50, dropout=0.1)
-    total_params = sum(p.numel() for p in model.parameters())
-    print(f'  Params: {total_params:,}')
+        print(f'  Item features: {item_features.shape}')
+        print(f'  V2 User features: {user_features_v2.shape}')
+        return train_click, val_click, encoders, ext_encoders, item_features, \
+               user_features_v2, nu, ni, nc, nb
 
-    # Build batch from sample
-    batch = {k: v.unsqueeze(0) for k, v in sample.items() if isinstance(v, torch.Tensor)}
-
-    user_keys = ['user_id', 'hist_items', 'hist_brands', 'hist_ratings',
-                 'hist_time_deltas', 'hist_verified', 'hist_len',
-                 'click_count', 'time_span', 'user_avg_rating',
-                 'user_std_rating', 'user_verified_ratio', 'user_avg_helpful']
-    pos_keys = ['item_id', 'category_id', 'brand_id', 'item_click_count',
-                'created_at_ts', 'item_avg_rating', 'item_rating_number']
-
-    user_batch = {k: batch[k] for k in user_keys if k in batch}
-    pos_batch = {k: batch[f'pos_{k}'] for k in pos_keys if f'pos_{k}' in batch}
-    neg_batch = {k: batch[f'neg_{k}'] for k in pos_keys if f'neg_{k}' in batch}
-
-    pos_score, neg_score = model.forward_pairwise(user_batch, pos_batch, neg_batch)
-    loss = model.compute_bpr_loss(pos_score, neg_score)
-    print(f'  Pos score: {pos_score.item():.4f}')
-    print(f'  Neg score: {neg_score.item():.4f}')
-    print(f'  BPR loss:  {loss.item():.4f}')
-
-    loss.backward()
-    print(f'  Backward: OK')
-    print(f'  Time: {time.time()-t0:.1f}s')
+    (train_click, val_click, encoders, ext_encoders, item_features,
+     user_features_v2, nu, ni, nc, nb) = step(
+        'Build encoders + features', build_features)
 
     # ============================================================
-    # Step 5: Evaluation
+    # Step 3: V2 TwoTowerV2Model — 1 batch fwd/back
     # ============================================================
-    print()
-    print('=' * 60)
-    print('STEP 5: Evaluation')
-    print('=' * 60)
-    t0 = time.time()
+    def test_v2():
+        from data_loader import TwoTowerV2Dataset
+        from model import TwoTowerV2Model
+        from torch.utils.data import DataLoader
 
-    from train_din_ext import evaluate_ext
-    device = torch.device('cpu')
-    metrics = evaluate_ext(model, val_click, user_feat, item_feat,
-                            encoders, device, max_users=50)
-    print(f'  AUC:     {metrics["auc"]:.4f}')
-    print(f'  PosMean: {metrics["pos_mean"]:.4f}')
-    print(f'  Users:   {metrics["n_users"]}')
-    print(f'  Time: {time.time()-t0:.1f}s')
+        ds = TwoTowerV2Dataset(train_click, user_features_v2, item_features, ext_encoders,
+                               num_items=ni, hist_len=config.HIST_LEN, num_brands=nb)
+        dl = DataLoader(ds, batch_size=8, shuffle=True, collate_fn=step.collate)
+        batch = next(iter(dl))
+
+        model = TwoTowerV2Model(nu, ni, nc, num_brands=nb, embed_dim=64,
+                                hidden_dims=[128, 64], hist_len=config.HIST_LEN,
+                                brand_embed_dim=32)
+        params = sum(p.numel() for p in model.parameters())
+        user_vec, pos_vec = model(batch)
+        loss = model.compute_infonce_loss(user_vec, pos_vec)
+        loss.backward()
+        print(f'  Params={params:,} | Loss={loss.item():.4f}  ✓')
+
+    step('V2 TwoTowerV2Model fwd+back', test_v2)
 
     # ============================================================
-    # Done
+    # Step 4: Extended DIN — 1 batch fwd/back
     # ============================================================
-    print()
-    print('=' * 60)
-    print(f'ALL CHECKS PASSED  (total: {time.time()-t_total:.1f}s)')
+    def test_ext_din():
+        from data_loader_ext import build_extended_user_features, DINExtendedDataset
+        from model_ext import DINExtendedModel
+        from torch.utils.data import DataLoader
+
+        user_feat = build_extended_user_features(train_click, raw_meta, ext_encoders, hist_len=50)
+
+        ds = DINExtendedDataset(train_click, user_feat, item_features, ext_encoders,
+                                hist_len=50, neg_ratio=2)
+        sample = ds[0]
+
+        model = DINExtendedModel(nu, ni, nb, nc, embed_dim=64, brand_embed_dim=32,
+                                 hidden_dims=[128, 64], hist_len=50, dropout=0.1)
+        params = sum(p.numel() for p in model.parameters())
+
+        # Single-sample forward
+        batch = {k: v.unsqueeze(0) for k, v in sample.items() if isinstance(v, torch.Tensor)}
+        user_keys = ['user_id', 'hist_items', 'hist_brands', 'hist_ratings',
+                     'hist_time_deltas', 'hist_verified', 'hist_len',
+                     'click_count', 'time_span', 'user_avg_rating',
+                     'user_std_rating', 'user_verified_ratio', 'user_avg_helpful']
+        pos_keys = ['item_id', 'category_id', 'brand_id', 'item_click_count',
+                    'created_at_ts', 'item_avg_rating', 'item_rating_number']
+
+        user_batch = {k: batch[k] for k in user_keys if k in batch}
+        pos_batch = {k: batch[f'pos_{k}'] for k in pos_keys if f'pos_{k}' in batch}
+        neg_batch = {k: batch[f'neg_{k}'] for k in pos_keys if f'neg_{k}' in batch}
+
+        pos_score, neg_score = model.forward_pairwise(user_batch, pos_batch, neg_batch)
+        loss = model.compute_bpr_loss(pos_score, neg_score)
+        loss.backward()
+        print(f'  Params={params:,} | Pos={pos_score.item():.3f} | '
+              f'Neg={neg_score.item():.3f} | Loss={loss.item():.4f}  ✓')
+
+    step('Extended DIN fwd+back', test_ext_din)
+
+    # ============================================================
+    print(); print('=' * 60)
+    print(f'ALL 4 STEPS PASSED  (total: {time.time()-t_total:.1f}s)')
     print('=' * 60)
 
+
+def _collate(batch):
+    keys = batch[0].keys()
+    result = {}
+    for key in keys:
+        values = [item[key] for item in batch]
+        if values and isinstance(values[0], torch.Tensor):
+            result[key] = torch.stack(values)
+        else:
+            result[key] = torch.tensor(values)
+    return result
+
+
+step.collate = _collate
 
 if __name__ == '__main__':
     main()

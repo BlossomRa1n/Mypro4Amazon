@@ -60,8 +60,6 @@ def load_amazon_reviews(data_path, categories, offline=False):
             'parent_asin': 'click_article_id',
             'timestamp': 'click_timestamp'
         })
-        if 'rating' in df.columns:
-            df = df.drop(columns=['rating'])
 
         all_ratings.append(df)
 
@@ -103,7 +101,7 @@ def load_amazon_products(data_path, categories):
     每个商品的 category_id 设为其来源品类名，品类 Embedding 从此有意义。
 
     article_id  ← parent_asin
-    category_id ← 品类名称 (如 'Office_Products', 'All_Beauty')
+    category_id ← 品类名称 (如 'Office_Products', 'Video_Games')
     created_at_ts ← 每个 item 的最早评论时间戳
     """
     all_products = []
@@ -378,6 +376,37 @@ def build_hard_negative_index(i2i_sim, encoders, num_hard_negatives=4):
     return hard_neg_index
 
 
+def build_same_category_hard_neg_index(item_features, num_items, num_hard_negatives=4):
+    """同品类难负: 每个 item 的难负 = 同品类下最热门的其他 item (天然难区分)。
+    item_features: DataFrame, index=item_idx, 含 category_idx + item_click_count_norm
+    """
+    print(">>> Building same-category hard negative index...")
+    from collections import defaultdict
+    idx_arr = np.arange(num_items)
+    cat_arr = item_features['category_idx'].reindex(idx_arr, fill_value=0).to_numpy(dtype=np.int64)
+    pop_arr = item_features['item_click_count_norm'].reindex(idx_arr, fill_value=0).to_numpy(dtype=np.float32)
+
+    cat_items = defaultdict(list)
+    for idx, cat in zip(idx_arr, cat_arr):
+        cat_items[int(cat)].append(idx)
+
+    hard_neg_index = {}
+    for cat, items in cat_items.items():
+        items_sorted = sorted(items, key=lambda i: -pop_arr[i])
+        m = len(items_sorted)
+        for item in items_sorted:
+            negs = []
+            for cand in items_sorted:
+                if cand != item:
+                    negs.append(cand)
+                if len(negs) >= num_hard_negatives:
+                    break
+            hard_neg_index[item] = negs
+
+    print(f">>> Built same-category hard negative index for {len(hard_neg_index):,} items")
+    return hard_neg_index
+
+
 # ============================================================
 # PyTorch Dataset 类
 # ============================================================
@@ -508,12 +537,24 @@ class TwoTowerDataset(Dataset):
 
 
 class TwoTowerV2Dataset(Dataset):
-    """增强版双塔数据集: InfoNCE (In-batch negatives) + Hard Negative Mining"""
+    """增强版双塔数据集: InfoNCE (In-batch negatives) + Hard Negative Mining
+    + 扩展特征: brand/quality (item) + user_stats (user)
+    """
     def __init__(self, click_df, user_features, item_features, encoders, num_items,
-                 hist_len=50, hard_neg_index=None, num_hard_negatives=4):
+                 hist_len=50, hard_neg_index=None, num_hard_negatives=4, num_brands=0,
+                 num_explicit_negatives=0):
         self.user_le = encoders['user_id']
         self.item_le = encoders['item_id']
         self.raw_to_idx = encoders.get('raw_to_idx', None)
+
+        self.num_explicit_negatives = num_explicit_negatives
+        # 显式负样本 (1-2星) 映射: user_idx -> [item_idx, ...] (过滤正样本前捕获)
+        self.user_explicit_negs = {}
+        if num_explicit_negatives > 0 and 'click_label' in click_df.columns:
+            neg_df = click_df[click_df['click_label'] == 0].copy()
+            neg_df['user_idx'] = self.user_le.transform(neg_df['user_id'])
+            neg_df['item_idx'] = self.item_le.transform(neg_df['click_article_id'])
+            self.user_explicit_negs = neg_df.groupby('user_idx')['item_idx'].apply(list).to_dict()
 
         # 只用正样本做对比学习
         click_df = click_df[click_df['click_label'] == 1].copy()
@@ -527,6 +568,7 @@ class TwoTowerV2Dataset(Dataset):
         self.hist_len = hist_len
         self.hard_neg_index = hard_neg_index or {}
         self.num_hard_negatives = num_hard_negatives
+        self.num_brands = num_brands
 
         # --- 预构建数组 (只做一次，__getitem__ 纯数组下标) ---
         if self.raw_to_idx is not None:
@@ -536,30 +578,60 @@ class TwoTowerV2Dataset(Dataset):
 
         num_users = len(self.user_le.classes_)
         self.user_hist_arr = [None] * num_users
+        self.user_hist_brands_arr = [None] * num_users   # Phase 2: 品牌偏好
+        self.user_hist_time_arr = [None] * num_users     # Phase 2: 时间衰减
         self.user_click_cnt_arr = np.zeros(num_users, dtype=np.float32)
         self.user_time_span_arr = np.zeros(num_users, dtype=np.float32)
+        self.user_avg_rating_arr = np.zeros(num_users, dtype=np.float32)
+        self.user_std_rating_arr = np.zeros(num_users, dtype=np.float32)
 
-        for _, row in user_features.iterrows():
-            raw_uid = row['user_id']
-            if self.raw_to_idx is not None:
-                uid_idx = self.raw_to_idx.get(raw_uid)
-            elif raw_uid in self.user_le.classes_:
-                uid_idx = self.user_le.transform([raw_uid])[0]
-            else:
-                uid_idx = None
-            if uid_idx is not None:
-                self.user_hist_arr[uid_idx] = row['hist_items_trunc']
-                self.user_click_cnt_arr[uid_idx] = row['click_count_norm']
-                self.user_time_span_arr[uid_idx] = row['time_span_norm']
+        # --- 向量化散射: raw user_id -> encoded uid_idx (原 iterrows 83 万行) ---
+        if self.raw_to_idx is not None:
+            uid_idx = user_features['user_id'].map(self.raw_to_idx)
+        else:
+            raw_to_idx = {raw: idx for idx, raw in enumerate(self.user_le.classes_)}
+            uid_idx = user_features['user_id'].map(raw_to_idx)
+        valid = uid_idx.notna()
+        uid_arr = uid_idx[valid].astype(np.int64).to_numpy()
+        uf_valid = user_features.loc[valid]
 
+        # 标量特征: fancy-indexing 一次性散射 (等价于原逐行赋值)
+        # 注: rating 两列原循环用 .get(col, 0) 缺列->0; click/time 用 row[...] 缺列->KeyError, 精确复现
+        def _ucol(df, name, dtype):
+            return df[name].to_numpy(dtype=dtype) if name in df.columns else np.zeros(len(df), dtype=dtype)
+
+        self.user_click_cnt_arr[uid_arr] = uf_valid['click_count_norm'].to_numpy(dtype=np.float32)
+        self.user_time_span_arr[uid_arr] = uf_valid['time_span_norm'].to_numpy(dtype=np.float32)
+        self.user_avg_rating_arr[uid_arr] = _ucol(uf_valid, 'user_avg_rating_norm', np.float32)
+        self.user_std_rating_arr[uid_arr] = _ucol(uf_valid, 'user_std_rating_norm', np.float32)
+
+        # hist_items_trunc / hist_brands / hist_time_deltas 变长 list (缺列默认 None, __getitem__ 兜底)
+        def _ucol_list(df, name):
+            return df[name].tolist() if name in df.columns else [None] * len(df)
+
+        brands_list = _ucol_list(uf_valid, 'hist_brands')
+        times_list = _ucol_list(uf_valid, 'hist_time_deltas')
+        for u, h, b, t in zip(uid_arr, uf_valid['hist_items_trunc'].tolist(), brands_list, times_list):
+            self.user_hist_arr[u] = h
+            self.user_hist_brands_arr[u] = b
+            self.user_hist_time_arr[u] = t
+
+        # --- 向量化散射: item_features.index 即 item_idx (0..N-1) ---
+        # 原循环 .loc[idx].get(col, 0) 的等价: 缺列->0, gap index 留 0 → reindex(fill_value=0)
         num_all_items = len(self.item_le.classes_)
-        self.item_cat_arr = np.zeros(num_all_items, dtype=np.int64)
-        self.item_click_arr = np.zeros(num_all_items, dtype=np.float32)
-        self.item_created_arr = np.zeros(num_all_items, dtype=np.float32)
-        for idx in item_features.index:
-            self.item_cat_arr[idx] = int(item_features.loc[idx].get('category_idx', 0))
-            self.item_click_arr[idx] = float(item_features.loc[idx].get('item_click_count_norm', 0))
-            self.item_created_arr[idx] = float(item_features.loc[idx].get('created_at_ts_norm', 0))
+        _idx = np.arange(num_all_items)
+
+        def _col(name, dtype):
+            if name in item_features.columns:
+                return item_features[name].reindex(_idx, fill_value=0).to_numpy(dtype=dtype)
+            return np.zeros(num_all_items, dtype=dtype)
+
+        self.item_cat_arr = _col('category_idx', np.int64)
+        self.item_brand_arr = _col('brand_idx', np.int64)
+        self.item_click_arr = _col('item_click_count_norm', np.float32)
+        self.item_created_arr = _col('created_at_ts_norm', np.float32)
+        self.item_avg_rating_arr = _col('item_avg_rating_norm', np.float32)
+        self.item_rating_num_arr = _col('item_rating_number_norm', np.float32)
 
     def __len__(self):
         return len(self.interactions)
@@ -568,26 +640,38 @@ class TwoTowerV2Dataset(Dataset):
         hist_items = self.user_hist_arr[user_idx]
         if hist_items is None:
             hist_items = []
+        hist_brands = self.user_hist_brands_arr[user_idx] or []
+        hist_times = self.user_hist_time_arr[user_idx] or []
         hist_len_actual = len(hist_items)
 
-        if hist_len_actual < self.hist_len:
-            padded = hist_items + [0] * (self.hist_len - hist_len_actual)
-        else:
-            padded = hist_items[-self.hist_len:]
-            hist_len_actual = self.hist_len
+        def _pad(seq, pad_val):
+            seq = seq[-self.hist_len:] if len(seq) > self.hist_len else seq
+            return seq + [pad_val] * (self.hist_len - len(seq))
+
+        padded = _pad(hist_items, 0)
+        padded_brands = _pad(hist_brands, 0)
+        padded_times = _pad(hist_times, 0.0)
+        hist_len_actual = min(hist_len_actual, self.hist_len)
 
         return {
             'hist_items': torch.LongTensor(padded),
+            'hist_brands': torch.LongTensor(padded_brands),
+            'hist_time_deltas': torch.FloatTensor(padded_times),
             'hist_len': torch.tensor(hist_len_actual, dtype=torch.long),
             'click_count': torch.tensor(self.user_click_cnt_arr[user_idx], dtype=torch.float32),
             'time_span': torch.tensor(self.user_time_span_arr[user_idx], dtype=torch.float32),
+            'user_avg_rating': torch.tensor(self.user_avg_rating_arr[user_idx], dtype=torch.float32),
+            'user_std_rating': torch.tensor(self.user_std_rating_arr[user_idx], dtype=torch.float32),
         }
 
     def _get_item_data(self, item_idx):
         return {
             'category_id': torch.tensor(self.item_cat_arr[item_idx], dtype=torch.long),
+            'brand_id': torch.tensor(self.item_brand_arr[item_idx], dtype=torch.long),
             'item_click_count': torch.tensor(self.item_click_arr[item_idx], dtype=torch.float32),
             'created_at_ts': torch.tensor(self.item_created_arr[item_idx], dtype=torch.float32),
+            'item_avg_rating': torch.tensor(self.item_avg_rating_arr[item_idx], dtype=torch.float32),
+            'item_rating_number': torch.tensor(self.item_rating_num_arr[item_idx], dtype=torch.float32),
         }
 
     def __getitem__(self, idx):
@@ -599,13 +683,20 @@ class TwoTowerV2Dataset(Dataset):
         batch = {
             'user_id': torch.tensor(user_idx, dtype=torch.long),
             'hist_items': user_data['hist_items'],
+            'hist_brands': user_data['hist_brands'],
+            'hist_time_deltas': user_data['hist_time_deltas'],
             'hist_len': user_data['hist_len'],
             'click_count': user_data['click_count'],
             'time_span': user_data['time_span'],
+            'user_avg_rating': user_data['user_avg_rating'],
+            'user_std_rating': user_data['user_std_rating'],
             'pos_item_id': torch.tensor(pos_item_idx, dtype=torch.long),
             'pos_category_id': pos_item_data['category_id'],
+            'pos_brand_id': pos_item_data['brand_id'],
             'pos_item_click_count': pos_item_data['item_click_count'],
             'pos_created_at_ts': pos_item_data['created_at_ts'],
+            'pos_item_avg_rating': pos_item_data['item_avg_rating'],
+            'pos_item_rating_number': pos_item_data['item_rating_number'],
             'click_weight': torch.tensor(self.weights[idx], dtype=torch.float32),
         }
 
@@ -616,11 +707,26 @@ class TwoTowerV2Dataset(Dataset):
                     hard_negs.append(np.random.randint(1, self.num_items))
             else:
                 hard_negs = np.random.randint(1, self.num_items, size=self.num_hard_negatives).tolist()
+
+            # 显式负样本 (1-2星) 追加为额外困难负样本 (固定长度, 缺则随机补齐)
+            if self.num_explicit_negatives > 0:
+                expl = self.user_explicit_negs.get(user_idx, [])
+                chosen = []
+                if expl:
+                    k = min(len(expl), self.num_explicit_negatives)
+                    chosen = [int(x) for x in np.random.choice(expl, size=k, replace=False)]
+                while len(chosen) < self.num_explicit_negatives:
+                    chosen.append(int(np.random.randint(1, self.num_items)))
+                hard_negs.extend(chosen)
+
             hard_neg_data = [self._get_item_data(neg_idx) for neg_idx in hard_negs]
             batch['hard_neg_ids'] = torch.LongTensor(hard_negs)
             batch['hard_neg_category_ids'] = torch.stack([d['category_id'] for d in hard_neg_data])
+            batch['hard_neg_brand_ids'] = torch.stack([d['brand_id'] for d in hard_neg_data])
             batch['hard_neg_item_click_count'] = torch.stack([d['item_click_count'] for d in hard_neg_data])
             batch['hard_neg_created_at_ts'] = torch.stack([d['created_at_ts'] for d in hard_neg_data])
+            batch['hard_neg_item_avg_rating'] = torch.stack([d['item_avg_rating'] for d in hard_neg_data])
+            batch['hard_neg_item_rating_number'] = torch.stack([d['item_rating_number'] for d in hard_neg_data])
 
         return batch
 

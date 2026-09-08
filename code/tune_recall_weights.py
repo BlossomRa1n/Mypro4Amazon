@@ -95,7 +95,7 @@ def main():
 
     # 4. 加载 embedding
     all_item_vecs = None
-    for path in [config.V2_EMBED_PKL, config.EMBED_PKL]:
+    for path in [config.V2_EMBED_PKL]:
         if os.path.exists(path):
             with open(path, 'rb') as f:
                 all_item_vecs = pickle.load(f)

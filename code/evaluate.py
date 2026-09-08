@@ -3,13 +3,17 @@
 
 评估策略（时序分割）：
 - 对每个用户：前 80% 交互作历史，后 20% 作验证正样本
-- 检查验证正样本有多少被推荐列表命中 → HR@K / NDCG@K
+- 两个协议:
+  1) Full-rank: 验证正样本在推荐列表中的命中率 (供初步诊断)
+  2) Sampled (SASRec protocol): 1 gt vs N 随机负 → 模型打分 → HR@K / NDCG@K
+     对齐 academic benchmark
 """
 import pandas as pd
 import numpy as np
 import torch
-import os
+import os, sys
 from collections import defaultdict
+from tqdm import tqdm
 
 
 # ============================================================
@@ -82,7 +86,7 @@ def compute_item_embeddings(model, num_items, item_features, device, batch_size=
 
 
 # ============================================================
-# TwoTower 模型评估 (train_deep / train_v2 共用)
+# TwoTower 模型评估 (train_v2 用)
 # ============================================================
 
 def evaluate_two_tower(model, val_df, train_df, user_features, item_features,
@@ -128,14 +132,18 @@ def evaluate_two_tower(model, val_df, train_df, user_features, item_features,
     # 4. 采样用户 (加速)
     val_users = list(val_items.keys())
     if max_users and len(val_users) > max_users:
-        val_users = list(np.random.choice(val_users, max_users, replace=False))
+        rng = np.random.default_rng(42)
+        val_users = list(rng.choice(val_users, max_users, replace=False))
 
     # --- 预构建用户特征字典 (O(1) 查询, 替代逐行 DataFrame 扫描) ---
     user_feat_dict = {}
     for _, row in user_features.iterrows():
         uid = row['user_id']
+        hist = row.get('hist_items_trunc', row.get('hist_items', []))
         user_feat_dict[uid] = {
-            'hist': row['hist_items_trunc'],
+            'hist': hist,
+            'hist_brands': row.get('hist_brands', []),
+            'hist_time_deltas': row.get('hist_time_deltas', []),
             'click_norm': row['click_count_norm'],
             'span_norm': row['time_span_norm'],
             'avg_rating': float(row.get('user_avg_rating_norm', 0) or 0),
@@ -150,6 +158,7 @@ def evaluate_two_tower(model, val_df, train_df, user_features, item_features,
         chunk_users = val_users[start:start + user_batch_size]
         # 组装用户 batch
         user_ids, histories, hist_lens, click_counts, time_spans, avg_ratings, std_ratings = [], [], [], [], [], [], []
+        brands_list, times_list = [], []
         valid_users_in_chunk = []
         for raw_uid in chunk_users:
             feat = user_feat_dict.get(raw_uid)
@@ -162,14 +171,22 @@ def evaluate_two_tower(model, val_df, train_df, user_features, item_features,
 
             hist_len = 50
             hist = feat['hist']
+            hist_brands = feat['hist_brands'] or []
+            hist_times = feat['hist_time_deltas'] or []
             hl = len(hist)
             if hl > hist_len:
                 hist = hist[-hist_len:]
+                hist_brands = hist_brands[-hist_len:]
+                hist_times = hist_times[-hist_len:]
                 hl = hist_len
             padded = hist + [0] * (hist_len - hl)
+            padded_brands = hist_brands + [0] * (hist_len - len(hist_brands))
+            padded_times = hist_times + [0.0] * (hist_len - len(hist_times))
 
             user_ids.append(uidx)
             histories.append(padded)
+            brands_list.append(padded_brands)
+            times_list.append(padded_times)
             hist_lens.append(hl)
             click_counts.append(feat['click_norm'])
             time_spans.append(feat['span_norm'])
@@ -183,6 +200,8 @@ def evaluate_two_tower(model, val_df, train_df, user_features, item_features,
         user_batch = {
             'user_id': torch.LongTensor(user_ids).to(device),
             'hist_items': torch.LongTensor(histories).to(device),
+            'hist_brands': torch.LongTensor(brands_list).to(device),
+            'hist_time_deltas': torch.FloatTensor(times_list).to(device),
             'hist_len': torch.LongTensor(hist_lens).to(device),
             'click_count': torch.FloatTensor(click_counts).to(device),
             'time_span': torch.FloatTensor(time_spans).to(device),
@@ -194,22 +213,30 @@ def evaluate_two_tower(model, val_df, train_df, user_features, item_features,
             user_vecs = model.get_user_embedding(user_batch)  # [B, D]
             scores = torch.matmul(user_vecs, all_item_vecs.t())  # [B, num_items]
 
-        scores = scores.cpu().numpy()
+            # 排除训练集已交互物品 (GPU 上批量 mask, 替代逐用户 CPU 赋值)
+            mask_rows, mask_cols = [], []
+            for i, raw_uid in enumerate(valid_users_in_chunk):
+                for e in train_items.get(raw_uid, ()):
+                    if 0 <= e < num_items:
+                        mask_rows.append(i)
+                        mask_cols.append(e)
+            if mask_rows:
+                rows = torch.as_tensor(mask_rows, dtype=torch.long, device=device)
+                cols = torch.as_tensor(mask_cols, dtype=torch.long, device=device)
+                scores[rows, cols] = -1e9
+
+            # GPU topk (只取 top-k, 无需全量 argsort)
+            top_indices = torch.topk(scores, k, dim=1).indices  # [B, k]
+
+        top_indices = top_indices.cpu().numpy()
 
         for i, raw_uid in enumerate(valid_users_in_chunk):
-            s = scores[i]
-            # 排除训练集已交互物品
-            excluded = train_items.get(raw_uid, set())
-            for e in excluded:
-                if 0 <= e < num_items:
-                    s[e] = -1e9
-            # Top-K
-            top_indices = np.argsort(s)[::-1][:k]
+            topk_idx = top_indices[i].tolist()
             gt_set = val_items.get(raw_uid, set())
-            hits = gt_set.intersection(set(top_indices))
+            hits = gt_set.intersection(topk_idx)
             if hits:
                 hr_total += 1
-            for pos, idx in enumerate(top_indices):
+            for pos, idx in enumerate(topk_idx):
                 if idx in gt_set:
                     ndcgs.append(1.0 / np.log2(pos + 2))
 
@@ -264,7 +291,8 @@ def evaluate_two_tower_sampled(model, val_df, train_df, user_features, item_feat
     # 采样用户
     val_users = list(val_items.keys())
     if max_users and len(val_users) > max_users:
-        val_users = list(np.random.choice(val_users, max_users, replace=False))
+        rng = np.random.default_rng(42)
+        val_users = list(rng.choice(val_users, max_users, replace=False))
 
     # 预构建用户特征字典
     user_feat_dict = {}
@@ -272,6 +300,8 @@ def evaluate_two_tower_sampled(model, val_df, train_df, user_features, item_feat
         uid = row['user_id']
         user_feat_dict[uid] = {
             'hist': row['hist_items_trunc'],
+            'hist_brands': row.get('hist_brands', []),
+            'hist_time_deltas': row.get('hist_time_deltas', []),
             'click_norm': row['click_count_norm'],
             'span_norm': row['time_span_norm'],
             'avg_rating': float(row.get('user_avg_rating_norm', 0) or 0),
@@ -300,15 +330,23 @@ def evaluate_two_tower_sampled(model, val_df, train_df, user_features, item_feat
 
         hist_len = 50
         hist = feat['hist']
+        hist_brands = feat['hist_brands'] or []
+        hist_times = feat['hist_time_deltas'] or []
         hl = len(hist)
         if hl > hist_len:
             hist = hist[-hist_len:]
+            hist_brands = hist_brands[-hist_len:]
+            hist_times = hist_times[-hist_len:]
             hl = hist_len
         padded = hist + [0] * (hist_len - hl)
+        padded_brands = hist_brands + [0] * (hist_len - len(hist_brands))
+        padded_times = hist_times + [0.0] * (hist_len - len(hist_times))
 
         user_batch = {
             'user_id': torch.LongTensor([uidx]).to(device),
             'hist_items': torch.LongTensor([padded]).to(device),
+            'hist_brands': torch.LongTensor([padded_brands]).to(device),
+            'hist_time_deltas': torch.FloatTensor([padded_times]).to(device),
             'hist_len': torch.LongTensor([hl]).to(device),
             'click_count': torch.FloatTensor([feat['click_norm']]).to(device),
             'time_span': torch.FloatTensor([feat['span_norm']]).to(device),
@@ -406,7 +444,8 @@ def evaluate_din(model, val_df, user_features, item_features,
     # 采样用户
     val_users = list(val_by_user.keys())
     if max_users and len(val_users) > max_users:
-        val_users = list(np.random.choice(val_users, max_users, replace=False))
+        rng = np.random.default_rng(42)
+        val_users = list(rng.choice(val_users, max_users, replace=False))
 
     pos_scores, neg_scores = [], []
     for raw_uid in val_users:
@@ -482,57 +521,143 @@ if __name__ == "__main__":
     import sys
     sys.path.insert(0, 'code')
     import config
+    from data_loader_ext import load_raw_meta, merge_jsonl_features
     from data_loader import get_all_click_df
 
-    result_path = os.path.join(config.RESULT_PATH, 'result_full_pipeline.csv')
+    import glob, os as _os
+    # Auto-find the latest prediction CSV
+    patterns = ['preds_*.csv', 'submission_*.csv']
+    candidates = []
+    for pat in patterns:
+        candidates = sorted(glob.glob(_os.path.join(config.RESULT_PATH, pat)), key=_os.path.getmtime, reverse=True)
+        if candidates:
+            break
+    result_path = candidates[0] if candidates else ''
+
+    if not result_path or not _os.path.exists(result_path):
+        print(f"[WARN] No prediction CSV found in {config.RESULT_PATH}, skipping eval.")
+        print("Run inference_full.py first to generate results.")
+        exit(0)
 
     print("=" * 60)
     print("Offline Evaluation (Temporal Split)")
     print("=" * 60)
 
-    train_df, test_df = split_train_val(
-        get_all_click_df(config.DATA_PATH, offline=config.OFFLINE_MODE),
-        split_ratio=config.EVAL_SPLIT_RATIO
-    )
+    # ---- 使用和 inference_full.py 完全相同的数据管道 (CSV 5-core) ----
+    print("Loading data (same CSV pipeline as inference_full.py)...")
+    click_df = get_all_click_df(config.DATA_PATH, offline=config.OFFLINE_MODE)
+    # Merge JSONL extra features (verified/helpful) into CSV click_df
+    click_df = merge_jsonl_features(click_df, config.DATA_PATH, config.AMAZON_CATEGORIES)
+    print(f">>> click_df: {len(click_df):,} interactions, "
+          f"{click_df['user_id'].nunique():,} users, "
+          f"{click_df['click_article_id'].nunique():,} items")
+
+    # 时序分割
+    train_df, test_df = split_train_val(click_df, split_ratio=config.EVAL_SPLIT_RATIO)
 
     # 读取已生成的推荐结果
-    if os.path.exists(result_path):
-        df = pd.read_csv(result_path)
-        user_recs = {}
-        for _, row in df.iterrows():
-            user_recs[row['user_id']] = [row[f'item_{i+1}'] for i in range(5)]
+    df = pd.read_csv(result_path)
+    user_recs = {}
+    for _, row in df.iterrows():
+        user_recs[row['user_id']] = [row[f'item_{i+1}'] for i in range(5)]
+    print(f">>> Loaded {len(user_recs)} users' recommendations")
 
-        print(f">>> Loaded {len(user_recs)} users' recommendations")
+    # ============================================================
+    # Protocol 1: Full-rank (ground truth set → Hit/NDCG)
+    # ============================================================
+    test_items = defaultdict(set)
+    for uid, g in test_df.groupby('user_id'):
+        test_items[uid] = set(g['click_article_id'].values)
+    val_users_fr = [u for u in test_items if u in user_recs]
+    print(f">>> Full-rank: {len(val_users_fr):,} users with predictions "
+          f"(/ {len(test_items):,} val users)")
 
-        # 计算指标
-        test_items = defaultdict(set)
-        for uid, g in test_df.groupby('user_id'):
-            test_items[uid] = set(g['click_article_id'].values)
-
+    if val_users_fr:
         for ks in [(5, 5), (20, 20)]:
-            hr_count = 0
-            ndcg_vals = []
-            total = 0
-            for uid, gt_set in test_items.items():
-                if uid not in user_recs:
-                    continue
+            hr_count, ndcg_vals = 0, []
+            for uid in val_users_fr:
+                gt_set = test_items[uid]
                 recs = user_recs[uid][:ks[0]]
                 hits = gt_set.intersection(recs)
-                total += 1
                 if hits:
                     hr_count += 1
                 for pos, item_id in enumerate(recs):
                     if item_id in gt_set:
                         ndcg_vals.append(1 / np.log2(pos + 2))
-            expected_ndcg = sum(ndcg_vals) / total if ndcg_vals else 0
-            print(f"  K={ks[0]:2d}: HR={hr_count/total:.4f} ({hr_count/total*100:5.1f}%), NDCG={expected_ndcg:.4f}")
+            ndcg = sum(ndcg_vals) / len(val_users_fr) if ndcg_vals else 0
+            print(f"  K={ks[0]:2d}: HR={hr_count/len(val_users_fr):.4f} "
+                  f"({hr_count/len(val_users_fr)*100:5.1f}%), NDCG={ndcg:.4f}")
 
-        # Popularity baseline
         pop_items = train_df['click_article_id'].value_counts().index.tolist()
-        pop_recs = {uid: pop_items[:5] for uid in user_recs}
-        hr_count = sum(1 for uid, gt_set in test_items.items()
-                       if uid in pop_recs and gt_set.intersection(pop_recs[uid]))
-        print(f"\n  Popularity K=5: HR={hr_count/len(user_recs):.4f}")
+        hr_pop = sum(1 for uid in val_users_fr
+                     if pop_items[:5] and test_items[uid].intersection(pop_items[:5]))
+        print(f"  Popularity K=5: HR={hr_pop/len(val_users_fr):.4f} "
+              f"({hr_pop/len(val_users_fr)*100:.1f}%)")
     else:
-        print(f"[WARN] No result file at {result_path}, skipping eval.")
-        print("Run inference_full.py first to generate results.")
+        print("  [skip] No validation users with predictions")
+
+    # ============================================================
+    # Protocol 2: Sampled (SASRec protocol — model scoring)
+    # 1 gt vs N random negatives → model scores → HR@K / NDCG@K
+    # ============================================================
+    print("\n" + "=" * 60)
+    print("Sampled Evaluation (SASRec protocol: 1 gt vs N random negs)")
+    print("=" * 60)
+
+    # Load DIN-Ext model
+    from model_ext import DINExtendedModel
+    from data_loader_ext import build_extended_encoders, build_extended_item_features, \
+        build_extended_user_features
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f">>> Using device: {device}")
+
+    # Load encoders (must match inference)
+    raw_meta = load_raw_meta(config.DATA_PATH, config.AMAZON_CATEGORIES)
+    encoders = build_extended_encoders(click_df, raw_meta, config.EXT_ENCODER_PKL)
+    item_le = encoders['item_id']
+    user_le = encoders['user_id']
+    num_items = len(item_le.classes_)
+    num_users = len(user_le.classes_)
+
+    # Load DIN-Ext checkpoint
+    din_best = config.DIN_EXT_BEST_FILE if os.path.exists(config.DIN_EXT_BEST_FILE) else config.DIN_EXT_MODEL_FILE
+    print(f">>> Loading DIN-Ext from: {din_best}")
+    ckpt = torch.load(din_best, map_location=device, weights_only=False)
+    cfg = ckpt['config']
+    model = DINExtendedModel(
+        num_users=cfg['num_users'], num_items=cfg['num_items'],
+        num_brands=cfg['num_brands'], num_categories=cfg['num_categories'],
+        embed_dim=cfg.get('embed_dim', 256), brand_embed_dim=cfg.get('brand_embed_dim', 64),
+        hidden_dims=cfg['hidden_dims'], hist_len=cfg['hist_len'],
+        dropout=cfg.get('dropout', 0.1),
+    ).to(device)
+    model.load_state_dict(ckpt['model_state_dict'])
+    model.eval()
+    print(f"    model: users={cfg['num_users']}, items={cfg['num_items']}, "
+          f"brands={cfg['num_brands']}, cats={cfg['num_categories']}")
+
+    # Build features (train window only — same as inference)
+    train_click, _ = split_train_val(click_df, config.EVAL_SPLIT_RATIO)
+    user_features = build_extended_user_features(train_click, raw_meta, encoders, hist_len=config.HIST_LEN)
+    item_features = build_extended_item_features(train_click, raw_meta, encoders)
+
+    # --- Run evaluate_ext (from train_din_ext.py) ---
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ''))
+    # Evaluate standalone sampled eval: import evaluate_ext from train_din_ext
+    from train_din_ext import evaluate_ext as din_evaluate_ext
+
+    # Leave-last-out from validation set
+    val_click = test_df[test_df['click_label'] == 1]
+
+    for neg_n in [50, 100, 200]:
+        print(f"\n>>> neg={neg_n} (leave-last-out, 1 gt vs {neg_n} random)...")
+        metrics = din_evaluate_ext(
+            model, val_click, user_features, item_features,
+            encoders, device, max_users=config.EVAL_MAX_USERS,
+            hist_len=5, num_negatives=neg_n
+        )
+        auc = metrics['auc']
+        pos_mean = metrics['pos_mean']
+        print(f"    AUC={auc:.4f} (pairwise) | Pos Mean={pos_mean:.4f} | "
+              f"Users={metrics['n_users']}")

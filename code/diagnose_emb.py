@@ -55,7 +55,6 @@ def diagnose(model_path):
             print(f"    avg_dim_variance={var:.6f}")
 
 if __name__ == "__main__":
-    for p in [config.V2_BEST_FILE, config.V2_MODEL_FILE, 
-              config.DEEP_BEST_FILE, config.DEEP_MODEL_FILE]:
+    for p in [config.V2_BEST_FILE, config.V2_MODEL_FILE]:
         if os.path.exists(p):
             diagnose(p)

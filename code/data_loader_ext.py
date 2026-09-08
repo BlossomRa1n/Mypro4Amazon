@@ -1,5 +1,5 @@
 """
-Extended data loader for Amazon Reviews 2023 Raw (All_Beauty).
+Extended data loader for Amazon Reviews 2023 Raw.
 Uses raw JSONL data (review + meta) to build richer features:
 
 离散特征: user_id, item_id, brand_id, verified_purchase
@@ -10,7 +10,9 @@ Uses raw JSONL data (review + meta) to build richer features:
 import pandas as pd
 import numpy as np
 import json
+import sys
 import os
+import subprocess
 import pickle
 import torch
 from torch.utils.data import Dataset
@@ -18,6 +20,31 @@ from sklearn.preprocessing import LabelEncoder
 from tqdm import tqdm
 from utils import reduce_mem
 import config
+
+
+# ============================================================
+# Internal: auto-download raw JSONL from HF Mirror
+# ============================================================
+
+def _auto_download_raw(data_path, cat):
+    """
+    Download raw JSONL for a category via download_raw.py (HF Mirror).
+    Returns True if download succeeded, False otherwise.
+    """
+    print(f"\n[AUTO-DL] Starting download for {cat} to {data_path}...")
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'download_raw.py')
+    try:
+        result = subprocess.run(
+            [sys.executable, script, '--category', str(cat), '--data-dir', str(data_path)],
+            capture_output=True, text=True, timeout=1200
+        )
+        if result.returncode == 0:
+            return True
+        print(f"[AUTO-DL] download_raw.py failed for {cat}: {result.stderr[-500:] if result.stderr else 'no stderr'}")
+        return False
+    except Exception as e:
+        print(f"[AUTO-DL] download_raw.py exception for {cat}: {e}")
+        return False
 
 
 # ============================================================
@@ -43,6 +70,14 @@ def load_raw_reviews(data_path, categories, offline=False):
             if os.path.exists(p):
                 path = p
                 break
+        if path is None:
+            # Try auto-download, then re-check
+            print(f">>> Raw review JSONL not found for {cat}, trying auto-download...")
+            _auto_download_raw(data_path, cat)
+            for p in path_candidates:
+                if os.path.exists(p):
+                    path = p
+                    break
         if path is None:
             raise FileNotFoundError(
                 f"Raw review JSONL not found for {cat}. Tried: {path_candidates}\n"
@@ -91,6 +126,87 @@ def load_raw_reviews(data_path, categories, offline=False):
     return df
 
 
+def merge_jsonl_features(click_df, data_path, categories):
+    """
+    Merge verified_purchase + helpful_vote from raw JSONL into CSV click_df.
+
+    CSV 5-core gives us 131K users — the scale we need for training.
+    Raw JSONL has extra fields (verified_purchase, helpful_vote) that CSV lacks.
+    We load only the extra columns from JSONL and LEFT JOIN on
+    (user_id, parent_asin, timestamp) into the CSV click_df.
+
+    Returns:
+        click_df with added columns: verified_purchase, helpful_vote
+        (filled with 0 where no JSONL match found)
+    """
+    print(">>> Merging JSONL extra features (verified/helpful) into CSV...")
+    # Load just the key + extra columns from JSONL
+    jsonl_rows = []
+    for cat in categories:
+        for sub in ['raw/review_categories', 'review_categories']:
+            path = os.path.join(data_path, sub, f'{cat}.jsonl')
+            if os.path.exists(path):
+                break
+        else:
+            # Also try flat layout (review data might be at data_path root)
+            for p in [os.path.join(data_path, f'{cat}.jsonl'),
+                      os.path.join(data_path, f'{cat}_reviews.jsonl')]:
+                if os.path.exists(p):
+                    path = p
+                    break
+            else:
+                print(f"    [WARN] No JSONL found for {cat}, skipping merge for this category")
+                continue
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in tqdm(f, desc=f"  scanning {cat}"):
+                try:
+                    obj = json.loads(line.strip())
+                    jsonl_rows.append((
+                        obj['user_id'],
+                        obj['parent_asin'],
+                        int(obj['timestamp']),
+                        int(obj.get('verified_purchase', False)),
+                        int(obj.get('helpful_vote', 0)),
+                    ))
+                except (json.JSONDecodeError, KeyError):
+                    continue
+
+    if not jsonl_rows:
+        print("    [WARN] No JSONL rows loaded, adding zero columns")
+        click_df = click_df.copy()
+        click_df['verified_purchase'] = 0
+        click_df['helpful_vote'] = 0
+        return click_df
+
+    jsonl_df = pd.DataFrame(jsonl_rows, columns=[
+        'user_id', 'parent_asin', 'timestamp',
+        'verified_purchase', 'helpful_vote'
+    ])
+    del jsonl_rows
+
+    # Match CSV timestamp format (int64 → float or vice versa)
+    jsonl_df['timestamp'] = jsonl_df['timestamp'].astype('int64')
+    csv_ts_dtype = click_df['click_timestamp'].dtype
+    if csv_ts_dtype == 'float64' or csv_ts_dtype == 'float32':
+        jsonl_df['timestamp'] = jsonl_df['timestamp'].astype(csv_ts_dtype)
+
+    # LEFT JOIN on (user_id, parent_asin, timestamp)
+    merged = click_df.merge(
+        jsonl_df,
+        left_on=['user_id', 'click_article_id', 'click_timestamp'],
+        right_on=['user_id', 'parent_asin', 'timestamp'],
+        how='left',
+        suffixes=('', '_jsonl')
+    )
+    merged.drop(columns=['parent_asin', 'timestamp'], inplace=True, errors='ignore')
+    merged['verified_purchase'] = merged['verified_purchase'].fillna(0).astype('int8')
+    merged['helpful_vote'] = merged['helpful_vote'].fillna(0).astype('int32')
+
+    hit_rate = (merged['verified_purchase'] > 0).sum() / max(len(merged), 1)
+    print(f"    Merged: {len(merged):,} rows, verified_match={hit_rate:.1%}")
+    return merged
+
+
 def load_raw_meta(data_path, categories):
     """
     Load raw meta JSONL: parent_asin → store/brand, avg_rating, rating_number,
@@ -109,6 +225,14 @@ def load_raw_meta(data_path, categories):
             if os.path.exists(p):
                 path = p
                 break
+        if path is None:
+            # Try auto-download, then re-check
+            print(f">>> Raw meta JSONL not found for {cat}, trying auto-download...")
+            _auto_download_raw(data_path, cat)
+            for p in path_candidates:
+                if os.path.exists(p):
+                    path = p
+                    break
         if path is None:
             raise FileNotFoundError(
                 f"Raw meta JSONL not found for {cat}. Tried: {path_candidates}\n"
@@ -266,11 +390,34 @@ def prepare_click_df(raw_reviews_df, min_user_inter=5, min_item_inter=5):
 def build_extended_encoders(click_df, meta_df, encoder_path):
     """
     Build LabelEncoders for user_id, item_id, brand_id, category_id.
+    Auto-detects stale cache (encoder users/items don't cover current data)
+    and rebuilds if needed.
     """
     if os.path.exists(encoder_path):
         print(f">>> Loading extended encoders from {encoder_path}...")
         with open(encoder_path, 'rb') as f:
-            return pickle.load(f)
+            encoders = pickle.load(f)
+        # Verify the cached encoder covers all current users/items/brands
+        try:
+            current_users = set(click_df['user_id'].unique())
+            cached_users = set(encoders['user_id'].classes_)
+            if not current_users.issubset(cached_users):
+                raise ValueError(f"users mismatch: {len(current_users - cached_users)} unseen users")
+
+            current_items = set(click_df['click_article_id'].unique())
+            cached_items = set(encoders['item_id'].classes_)
+            if not current_items.issubset(cached_items):
+                raise ValueError(f"items mismatch: {len(current_items - cached_items)} unseen items")
+            # 检测旧的 "union raw_meta 膨胀缓存": 缓存 item 数远大于当前 click item 数 → 重建
+            if len(cached_items) > len(current_items) * 2:
+                raise ValueError(
+                    f"item count inflated (old union-meta cache): "
+                    f"cached={len(cached_items):,} vs current={len(current_items):,}")
+
+            print(f"    Encoder check OK — reuse cached")
+            return encoders
+        except (ValueError, KeyError) as e:
+            print(f"    Stale encoder detected ({e}), rebuilding...")
 
     print(">>> Building extended ID encoders...")
     encoders = {}
@@ -281,13 +428,12 @@ def build_extended_encoders(click_df, meta_df, encoder_path):
     encoders['user_id'] = user_le
     encoders['raw_to_idx'] = {raw: idx for idx, raw in enumerate(user_le.classes_)}
 
-    # item_id
+    # item_id — 只编码有交互(5-core)的 item。
+    # 之前 np.union1d 把 raw_meta 里未过滤的全部 parent_asin 也并了进来,
+    # 导致 item 空间从 ~38万 膨胀到 ~265万, 其中 ~86% 是零交互的"幽灵商品"
+    # (永远不可能成为正样本/正确答案, 只白占 embedding 内存 + 拖慢全库检索 + 稀释 HR)。
     item_le = LabelEncoder()
-    all_items = np.union1d(
-        click_df['click_article_id'].unique(),
-        meta_df['parent_asin'].unique()
-    )
-    item_le.fit(all_items)
+    item_le.fit(click_df['click_article_id'].unique())
     encoders['item_id'] = item_le
 
     # brand_id — map known brands from meta, map unseen to 0
@@ -295,6 +441,7 @@ def build_extended_encoders(click_df, meta_df, encoder_path):
     brands_raw = meta_df['brand'].unique()
     brands = [str(b) for b in brands_raw if b is not None and str(b) != '<NA>']
     brand_le.fit(['__PAD__', '__UNKNOWN__'] + brands)
+    brand_le.classes_ = brand_le.classes_.astype(object)  # 修复: 单个超长品牌名(<U7563)会把固定宽度数组撑到 15GB
     encoders['brand_id'] = brand_le
 
     # category_id — from main_category in meta
@@ -435,17 +582,18 @@ def build_extended_user_features(click_df, meta_df, encoders, hist_len=50):
     # This replaces the per-item get_brand_idx() which did a linear
     # brand_le.transform() scan — the #1 bottleneck for large datasets.
     meta = meta_df.copy()
-    meta['item_idx'] = item_le.transform(meta['parent_asin'])
+    raw_to_item_enc = {cls: i for i, cls in enumerate(item_le.classes_)}
+    meta_idx = meta['parent_asin'].map(raw_to_item_enc)  # NaN for 未编码 item (幽灵商品)
     # Map brand strings → label indices via dict (O(1) per unique brand)
     brand_map = {b: i for i, b in enumerate(brand_le.classes_)}
-    meta['brand_idx'] = meta['brand'].map(brand_map).fillna(0).astype(np.int64)
+    meta_brand_idx = meta['brand'].map(brand_map).fillna(0).astype(np.int64)
 
     item_to_brand_arr = np.zeros(num_items, dtype=np.int64)
-    meta_item_idx = meta['item_idx'].values
-    meta_brand_idx_col = meta['brand_idx'].values
-    # Vectorized scatter: only valid indices
-    valid = (meta_item_idx >= 0) & (meta_item_idx < num_items)
-    item_to_brand_arr[meta_item_idx[valid]] = meta_brand_idx_col[valid]
+    # Vectorized scatter: only valid indices (跳过 NaN/越界)
+    is_valid = meta_idx.notna() & (meta_idx >= 0) & (meta_idx < num_items)
+    valid_item_idx = meta_idx[is_valid].astype(np.int64).values
+    valid_brand_idx = meta_brand_idx[is_valid].values
+    item_to_brand_arr[valid_item_idx] = valid_brand_idx
 
     # --- Sort once globally, then groupby preserves order ---
     click_df = click_df.copy()
@@ -454,14 +602,28 @@ def build_extended_user_features(click_df, meta_df, encoders, hist_len=50):
 
     # --- Per-user aggregation (loop unavoidable, but inner ops are vectorized) ---
     user_data = []
+    has_verified = 'verified_purchase' in click_df.columns
+    has_helpful = 'helpful_vote' in click_df.columns
+    has_rating = 'rating' in click_df.columns
     for uid, grp in tqdm(click_df.groupby('user_id', sort=False),
                          desc="  building user features"):
         # Already sorted by timestamp — no per-group sort needed
         item_seq = grp['item_idx'].to_numpy(dtype=np.int64)
-        rating_seq = grp['rating'].to_numpy(dtype=np.float32)
         ts_seq = grp['click_timestamp'].to_numpy(dtype=np.int64)
-        verified_seq = grp['verified_purchase'].to_numpy(dtype=np.int64)
-        helpful_seq = grp['helpful_vote'].to_numpy(dtype=np.float32)
+
+        # Optional fields: verified/helpful/rating may not exist in CSV data
+        if has_verified:
+            verified_seq = grp['verified_purchase'].to_numpy(dtype=np.int64)
+        else:
+            verified_seq = np.zeros(len(grp), dtype=np.int64)
+        if has_helpful:
+            helpful_seq = grp['helpful_vote'].to_numpy(dtype=np.float32)
+        else:
+            helpful_seq = np.zeros(len(grp), dtype=np.float32)
+        if has_rating:
+            rating_seq = grp['rating'].to_numpy(dtype=np.float32)
+        else:
+            rating_seq = np.zeros(len(grp), dtype=np.float32)
 
         n = len(item_seq)
         stats_n = n  # original click_count uses full group size
@@ -574,16 +736,7 @@ def build_hard_negative_index_ext(i2i_sim, encoders, num_hard_negatives=4):
 # ============================================================
 
 class DINExtendedDataset(Dataset):
-    """
-    Extended DIN dataset with brand, verified_purchase, item quality signals.
-
-    Each sample = (user features, positive item features, negative item features).
-    User history includes: items, brands, ratings, time_deltas, verified.
-
-    Optimized: vectorized BPR-pair negative sampling with ItemCF Hard Negative
-    Mining — prioritizes similar-but-unclicked items as negatives to force the
-    model to learn fine-grained preference distinctions.
-    """
+    """Extended DIN dataset with brand/verified/item-quality signals + ItemCF hard negatives."""
     def __init__(self, click_df, user_features, item_features, encoders,
                  hist_len=50, neg_ratio=4, hard_neg_index=None, num_hard_negatives=4):
         self.user_le = encoders['user_id']

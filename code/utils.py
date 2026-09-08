@@ -1,6 +1,24 @@
 import pandas as pd
 import numpy as np
 import time
+import random
+import torch
+
+
+def set_seed(seed=42):
+    """
+    固定随机种子, 保证训练可复现 (A/B 对比基线的三前提之一)。
+    seed 的唯一来源在此函数默认值, 召回/精排脚本统一调用 set_seed()。
+    cudnn.deterministic=True 牺牲少量速度换取 bit 级确定性;
+    若只做架构对比 (非 bit 级复现), 可改为 False 提速。
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
 
 def reduce_mem(df):
     """

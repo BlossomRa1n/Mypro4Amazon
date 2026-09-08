@@ -28,6 +28,9 @@ from data_loader_ext import (
 from model_ext import DINExtendedModel
 from evaluate import split_train_val
 from itemcf import itemcf_sim
+from utils import set_seed
+
+set_seed(42)
 
 
 def collate_fn(batch):
@@ -554,7 +557,7 @@ def train():
         latest_path = os.path.join(config.MODEL_PATH, 'din_ext_latest.pth')
         _save_checkpoint(model, optimizer, scheduler, model_cfg,
                          latest_path, epoch + 1, metrics, best_auc, patience_counter,
-                         save_optimizer=True)
+                         save_optimizer=False)
 
         # --- Track best ---
         is_better = config.SKIP_EVAL or auc > best_auc
@@ -565,7 +568,7 @@ def train():
             best_path = os.path.join(config.MODEL_PATH, 'din_ext_best.pth')
             _save_checkpoint(model, optimizer, scheduler, model_cfg,
                              best_path, epoch + 1, metrics, best_auc, patience_counter,
-                             save_optimizer=True)
+                             save_optimizer=False)
             print(f"  ★ New best! AUC={auc:.4f}")
         else:
             patience_counter += 1

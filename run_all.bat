@@ -3,7 +3,7 @@ chcp 65001 >nul
 setlocal enabledelayedexpansion
 
 echo ============================================================
-echo   MovieLens-1M RecSys Full Pipeline (Debug Mode)
+echo   Amazon Reviews 2023 RecSys Full Pipeline
 echo ============================================================
 echo.
 
@@ -11,7 +11,7 @@ REM Enter script directory
 cd /d "%~dp0"
 
 REM 1. Data validation
-echo [1/5] Data validation...
+echo [1/4] Data validation...
 python code\check.py
 if errorlevel 1 (
     echo [ERROR] Data validation failed, please check data files
@@ -20,18 +20,8 @@ if errorlevel 1 (
 )
 echo.
 
-REM 2. Train basic dual-tower
-echo [2/5] Train basic TwoTowerModel...
-python code\train_deep.py
-if errorlevel 1 (
-    echo [ERROR] TwoTowerModel training failed
-    pause
-    exit /b 1
-)
-echo.
-
-REM 3. Train SASRec dual-tower
-echo [3/5] Train SASRec TwoTowerV2...
+REM 2. Train SASRec dual-tower
+echo [2/4] Train SASRec TwoTowerV2...
 python code\train_v2.py
 if errorlevel 1 (
     echo [ERROR] TwoTowerV2 training failed
@@ -40,18 +30,18 @@ if errorlevel 1 (
 )
 echo.
 
-REM 4. Train DIN reranking
-echo [4/5] Train DIN reranking model...
-python code\train_din.py
+REM 3. Train Extended DIN reranking
+echo [3/4] Train Extended DIN reranking model...
+python code\train_din_ext.py
 if errorlevel 1 (
-    echo [ERROR] DIN training failed
+    echo [ERROR] Extended DIN training failed
     pause
     exit /b 1
 )
 echo.
 
-REM 5. Full inference (recall + reranking + submit)
-echo [5/5] Full inference pipeline...
+REM 4. Full inference (recall + reranking + submit)
+echo [4/4] Full inference pipeline...
 python code\inference_full.py
 if errorlevel 1 (
     echo [ERROR] Inference failed

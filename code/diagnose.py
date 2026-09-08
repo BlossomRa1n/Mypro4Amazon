@@ -44,9 +44,8 @@ for k in [5, 20, 50]:
 # 5. 模型文件状态
 print("\n--- Model Files ---")
 for path, label in [
-    (config.V2_MODEL_FILE, "V2 model"), (config.DEEP_MODEL_FILE, "V1 model"),
-    (config.DIN_MODEL_FILE, "DIN model"), (config.ITEMCF_SIM_PKL, "ItemCF sim"),
-    (config.V2_EMBED_PKL, "V2 embeddings"), (config.EMBED_PKL, "V1 embeddings")
+    (config.V2_MODEL_FILE, "V2 model"), (config.ITEMCF_SIM_PKL, "ItemCF sim"),
+    (config.V2_EMBED_PKL, "V2 embeddings")
 ]:
     ok = os.path.exists(path)
     size = os.path.getsize(path) / 1024**2 if ok else 0
