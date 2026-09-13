@@ -254,7 +254,7 @@ def train():
 
     if getattr(config, 'USE_ALS_INIT', False):
         from als_init import init_model_with_als
-        pos_click = click_df[click_df['click_label'] == 1]
+        pos_click = train_click[train_click['click_label'] == 1]
         model, als_ok = init_model_with_als(
             model, pos_click, encoders['user_id'], encoders['item_id'],
             fix_embeddings=getattr(config, 'ALS_FIX_EMBEDDINGS', False)

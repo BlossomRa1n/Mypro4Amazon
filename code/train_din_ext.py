@@ -80,6 +80,8 @@ def _load_checkpoint(filepath, model_class, optimizer, scheduler, device):
     model_cfg = ckpt['config']
     model = model_class(**model_cfg).to(device)
     model.load_state_dict(ckpt['model_state_dict'])
+    from baseline_runtime import rebind_optimizer
+    rebind_optimizer(optimizer, model)
     if 'optimizer_state_dict' in ckpt:
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
     if 'scheduler_state_dict' in ckpt:
@@ -92,7 +94,7 @@ def _load_checkpoint(filepath, model_class, optimizer, scheduler, device):
 
 
 def evaluate_ext(model, val_df, user_features, item_features,
-                  encoders, device, max_users=2000, hist_len=5, num_negatives=50):
+                  encoders, device, max_users=2000, hist_len=None, num_negatives=50):
     """
     DIN evaluation: leave-last-out + random negatives (SASRec-style).
 
@@ -112,6 +114,7 @@ def evaluate_ext(model, val_df, user_features, item_features,
       - num_negatives=50:  default from the SASRec paper
     """
     model.eval()
+    hist_len = hist_len or model.hist_len
     item_le = encoders['item_id']
     user_le = encoders['user_id']
     raw_to_idx = encoders.get('raw_to_idx', None)
@@ -136,6 +139,7 @@ def evaluate_ext(model, val_df, user_features, item_features,
 
     # --- Pre-build user feature arrays (indexed by encoded uid) ---
     user_hist_arr = [None] * num_users
+    user_seen_arr = [set() for _ in range(num_users)]
     user_brand_hist_arr = [None] * num_users
     user_rating_hist_arr = [None] * num_users
     user_delta_hist_arr = [None] * num_users
@@ -157,6 +161,7 @@ def evaluate_ext(model, val_df, user_features, item_features,
         if uidx is None:
             continue
         hist_items = row['hist_items']
+        user_seen_arr[uidx] = set(hist_items)
         hist_brands = row['hist_brands']
         hist_ratings = row['hist_ratings']
         hist_deltas = row['hist_time_deltas']
@@ -194,7 +199,7 @@ def evaluate_ext(model, val_df, user_features, item_features,
             val_user_pairs.append((uidx, last_item))
 
     if max_users and len(val_user_pairs) > max_users:
-        indices = np.random.choice(len(val_user_pairs), max_users, replace=False)
+        indices = np.random.default_rng(42).choice(len(val_user_pairs), max_users, replace=False)
         val_user_pairs = [val_user_pairs[i] for i in indices]
 
     H = hist_len
@@ -211,7 +216,7 @@ def evaluate_ext(model, val_df, user_features, item_features,
         return _pad_history(seq, L, 0.0)
 
     pos_scores, neg_scores = [], []
-    rng = np.random.default_rng()
+    rng = np.random.default_rng(42)
 
     for uidx, last_item in tqdm(val_user_pairs, desc="  evaluating"):
         # Pad user history to eval hist_len
@@ -266,7 +271,17 @@ def evaluate_ext(model, val_df, user_features, item_features,
             pos_scores.append(torch.sigmoid(model(batch)).item())
 
         # Random negatives (num_negatives, default 50)
-        neg_idxs = rng.integers(1, num_items, size=num_negatives)
+        excluded = user_seen_arr[uidx] | {last_item}
+        if num_items - 2 - len(excluded) < num_negatives:
+            raise ValueError('Insufficient eligible evaluation negatives')
+        selected = set()
+        while len(selected) < num_negatives:
+            for candidate in rng.integers(2, num_items, size=num_negatives * 2):
+                if candidate not in excluded:
+                    selected.add(int(candidate))
+                if len(selected) == num_negatives:
+                    break
+        neg_idxs = sorted(selected)
         for neg_idx in neg_idxs:
             neg_batch = dict(batch)
             neg_batch['item_id'] = torch.LongTensor([int(neg_idx)]).to(device)
@@ -284,7 +299,8 @@ def evaluate_ext(model, val_df, user_features, item_features,
 
     pos_arr = np.array(pos_scores)
     neg_arr = np.array(neg_scores)
-    auc = np.mean(pos_arr[:, None] > neg_arr[None, :])
+    from baseline_runtime import pair_auc
+    auc = pair_auc(pos_arr, neg_arr.reshape(len(pos_arr), num_negatives))
 
     return {
         'auc': auc,
@@ -407,7 +423,7 @@ def train():
     # ---- ALS 预训练初始化 item_embedding (关键: 防止 BPR 坍塌) ----
     if getattr(config, 'USE_ALS_INIT', False):
         from als_init import init_model_with_als
-        pos_click = click_df[click_df['click_label'] == 1]
+        pos_click = train_click[train_click['click_label'] == 1]
         model, als_ok = init_model_with_als(
             model, pos_click, encoders['user_id'], encoders['item_id'],
             fix_embeddings=getattr(config, 'ALS_FIX_EMBEDDINGS', False)

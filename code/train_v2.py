@@ -81,6 +81,8 @@ def _load_checkpoint(filepath, model_class, optimizer, scheduler, device):
     model_cfg = ckpt['config']
     model = model_class(**model_cfg).to(device)
     model.load_state_dict(ckpt['model_state_dict'])
+    from baseline_runtime import rebind_optimizer
+    rebind_optimizer(optimizer, model)
     if 'optimizer_state_dict' in ckpt:
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
     if 'scheduler_state_dict' in ckpt:
@@ -235,7 +237,7 @@ def train():
     # ---- ALS 预训练初始化 (如果有) ----
     if getattr(config, 'USE_ALS_INIT', False):
         from als_init import init_model_with_als
-        pos_click = click_df[click_df['click_label'] == 1]
+        pos_click = train_click[train_click['click_label'] == 1]
         model, als_ok = init_model_with_als(
             model, pos_click, encoders['user_id'], encoders['item_id'],
             fix_embeddings=getattr(config, 'ALS_FIX_EMBEDDINGS', False)

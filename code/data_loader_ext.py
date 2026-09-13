@@ -399,6 +399,8 @@ def build_extended_encoders(click_df, meta_df, encoder_path):
             encoders = pickle.load(f)
         # Verify the cached encoder covers all current users/items/brands
         try:
+            if encoders.get('schema_version') != 2:
+                raise ValueError('encoder must reserve PAD=0 and UNK=1')
             current_users = set(click_df['user_id'].unique())
             cached_users = set(encoders['user_id'].classes_)
             if not current_users.issubset(cached_users):
@@ -424,7 +426,7 @@ def build_extended_encoders(click_df, meta_df, encoder_path):
 
     # user_id
     user_le = LabelEncoder()
-    user_le.fit(click_df['user_id'].unique())
+    user_le.classes_ = np.asarray(['__PAD__', '__UNKNOWN__'] + sorted(click_df['user_id'].unique()), dtype=object)
     encoders['user_id'] = user_le
     encoders['raw_to_idx'] = {raw: idx for idx, raw in enumerate(user_le.classes_)}
 
@@ -433,14 +435,14 @@ def build_extended_encoders(click_df, meta_df, encoder_path):
     # 导致 item 空间从 ~38万 膨胀到 ~265万, 其中 ~86% 是零交互的"幽灵商品"
     # (永远不可能成为正样本/正确答案, 只白占 embedding 内存 + 拖慢全库检索 + 稀释 HR)。
     item_le = LabelEncoder()
-    item_le.fit(click_df['click_article_id'].unique())
+    item_le.classes_ = np.asarray(['__PAD__', '__UNKNOWN__'] + sorted(click_df['click_article_id'].unique()), dtype=object)
     encoders['item_id'] = item_le
 
     # brand_id — map known brands from meta, map unseen to 0
     brand_le = LabelEncoder()
     brands_raw = meta_df['brand'].unique()
     brands = [str(b) for b in brands_raw if b is not None and str(b) != '<NA>']
-    brand_le.fit(['__PAD__', '__UNKNOWN__'] + brands)
+    brand_le.classes_ = np.asarray(['__PAD__', '__UNKNOWN__'] + sorted(set(brands) - {'__PAD__', '__UNKNOWN__'}), dtype=object)
     brand_le.classes_ = brand_le.classes_.astype(object)  # 修复: 单个超长品牌名(<U7563)会把固定宽度数组撑到 15GB
     encoders['brand_id'] = brand_le
 
@@ -448,8 +450,9 @@ def build_extended_encoders(click_df, meta_df, encoder_path):
     cat_le = LabelEncoder()
     cats_raw = meta_df['main_category'].unique()
     cats = [str(c) for c in cats_raw if c is not None and str(c) != '<NA>']
-    cat_le.fit(['__PAD__'] + cats)
+    cat_le.classes_ = np.asarray(['__PAD__', '__UNKNOWN__'] + sorted(set(cats) - {'__PAD__', '__UNKNOWN__'}), dtype=object)
     encoders['category_id'] = cat_le
+    encoders['schema_version'] = 2
 
     os.makedirs(os.path.dirname(encoder_path), exist_ok=True)
     with open(encoder_path, 'wb') as f:

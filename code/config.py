@@ -7,7 +7,7 @@ ROOT_PATH = os.path.dirname(curr_path)
 # Amazon Reviews 2023 — 数据集 & 路径配置
 # ============================================================
 
-DATA_PATH = '/root/autodl-tmp/amazon_data'  # 服务器 autodl-tmp 数据盘 (当前工作环境)
+DATA_PATH = os.environ.get('AMAZON_DATA_PATH', os.path.join(ROOT_PATH, 'amazon_reviews'))
 # DATA_PATH = os.path.join(ROOT_PATH, 'amazon_reviews')  # 本地默认路径
 
 # --- 三档规模控制 ---
@@ -157,3 +157,13 @@ DIN_BRAND_EMBED_DIM = 64         # Brand Embedding 维度
 DIN_NEG_RATIO = 4                # 每正样本配 N 个负样本 (BPR)
 DIN_EXT_MODEL_FILE = os.path.join(MODEL_PATH, 'din_ext_model.pth')
 DIN_EXT_BEST_FILE = os.path.join(MODEL_PATH, 'din_ext_best.pth')
+
+# ============================================================
+# DIN Tokenized (Step 1) — 五路 token 精排配置
+# ============================================================
+DIN_TOKEN_HIDDEN_DIMS = [256, 128, 64]   # concat+MLP 融合层维度
+DIN_TOKEN_DROPOUT = 0.1
+DIN_TOKEN_MODEL_FILE = os.path.join(MODEL_PATH, 'din_token_model.pth')
+DIN_TOKEN_BEST_FILE = os.path.join(MODEL_PATH, 'din_token_best.pth')
+SVD_RERANK_CACHE = os.path.join(MODEL_PATH, 'svd_rerank_embeddings.pkl')  # {'user': U, 'item': V}
+DIN_USE_TOKEN_MODEL = False   # True: 推理/评估用 DINTokenizedModel 而非 DINExtendedModel

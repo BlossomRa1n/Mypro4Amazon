@@ -285,3 +285,96 @@ def init_model_with_als(model, click_df, user_le, item_le, fix_embeddings=False)
     print(f"[ALS] 初始化完成: {n_als:,} items × {n_embed} dims 从 ALS 载入")
 
     return model, True
+
+
+# ============================================================
+# SVD Warm-Start (user + item) — for DINTokenizedModel FM cross_out
+# ============================================================
+
+def _fit_svd_factors(matrix, factors):
+    """
+    截断 SVD (randomized) 同时返回 L2 归一化的 user factors (U) 与 item factors (V)。
+    U 与 V 必须来自同一次分解, 否则 FM cross_out = user_emb ⊙ item_emb 尺度/方向不一致。
+    """
+    from sklearn.decomposition import TruncatedSVD
+    n_iter = getattr(config, 'ALS_ITERATIONS', 15)
+    print(f">>> TruncatedSVD (n_components={factors}, randomized, n_iter={n_iter}) — user + item factors...")
+    svd = TruncatedSVD(n_components=factors, algorithm='randomized',
+                       n_iter=n_iter, random_state=42)
+    U_sigma = svd.fit_transform(matrix).astype(np.float32)   # (num_users, factors) = U·Σ
+    V = svd.components_.T.astype(np.float32)                 # (num_items, factors)
+    U = U_sigma / (np.linalg.norm(U_sigma, axis=1, keepdims=True) + 1e-8)
+    V = V / (np.linalg.norm(V, axis=1, keepdims=True) + 1e-8)
+    return U, V
+
+
+def init_rerank_with_svd(model, click_df, user_le, item_le, fix_embeddings=False):
+    """
+    用截断 SVD 同时初始化 user_embedding 与 item_embedding。
+
+    FM cross_out = user_emb ⊙ item_emb 只有在两者都是 CF latent factor 时才有意义,
+    所以精排的 user_embedding 也必须 warm-start (旧 init_model_with_als 只 init 了 item)。
+    缓存到 SVD_RERANK_CACHE (独立于 recall 的 SVD_CACHE, 保证 U/V 来自同一次分解)。
+    加载缓存时校验维度, 防止 offline/小数据缓存污染全量 (offline 与全量 num_items 不同)。
+    """
+    user_w = getattr(model, 'user_embedding', None)
+    item_w = getattr(model, 'item_embedding', None)
+    if user_w is not None:
+        n_users, factors = user_w.weight.shape
+    elif item_w is not None:
+        n_users, factors = None, item_w.weight.shape[1]
+    else:
+        print("[SVD] 找不到 user/item embedding 参数, 跳过。")
+        return model, False
+    n_items = item_w.weight.shape[0] if item_w is not None else None
+
+    cache = getattr(config, 'SVD_RERANK_CACHE',
+                    os.path.join(config.MODEL_PATH, 'svd_rerank_embeddings.pkl'))
+
+    U = V = None
+    if os.path.exists(cache):
+        try:
+            with open(cache, 'rb') as f:
+                data = pickle.load(f)
+            U, V = data['user'], data['item']
+            dim_ok = (U.shape[1] == factors and V.shape[1] == factors
+                      and (n_users is None or U.shape[0] == n_users)
+                      and (n_items is None or V.shape[0] == n_items))
+            if not dim_ok:
+                print(f"[SVD] cache 维度不匹配 (U={U.shape}, V={V.shape} vs "
+                      f"users={n_users}, items={n_items}, dim={factors}), 重新拟合...")
+                U = V = None
+            else:
+                print(f">>> Loading SVD user+item factors from {cache}...")
+        except Exception as e:
+            print(f"[SVD] cache 加载失败 ({e}), 重新拟合...")
+            U = V = None
+
+    if U is None or V is None:
+        matrix = build_user_item_matrix(click_df, user_le, item_le)
+        U, V = _fit_svd_factors(matrix, factors)
+        os.makedirs(os.path.dirname(cache), exist_ok=True)
+        with open(cache, 'wb') as f:
+            pickle.dump({'user': U, 'item': V}, f)
+        print(f">>> SVD user+item factors saved to {cache}")
+
+    ok = False
+    with torch.no_grad():
+        if item_w is not None and V.shape[1] == item_w.weight.shape[1]:
+            n = min(V.shape[0], item_w.weight.shape[0])
+            item_w.weight.data[:n] = torch.FloatTensor(V[:n])
+            ok = True
+        if user_w is not None and U.shape[1] == user_w.weight.shape[1]:
+            n = min(U.shape[0], user_w.weight.shape[0])
+            user_w.weight.data[:n] = torch.FloatTensor(U[:n])
+        if fix_embeddings:
+            if item_w is not None:
+                item_w.weight.requires_grad_(False)
+            if user_w is not None:
+                user_w.weight.requires_grad_(False)
+            print("[SVD] user/item embedding 已冻结")
+
+    n_user = min(U.shape[0], user_w.weight.shape[0]) if user_w is not None else 0
+    n_item = min(V.shape[0], item_w.weight.shape[0]) if item_w is not None else 0
+    print(f"[SVD] 初始化完成: user {n_user:,} × item {n_item:,} dims")
+    return model, ok

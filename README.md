@@ -2,6 +2,14 @@
 
 > 基于 Amazon Reviews 2023 数据集，预测用户未来可能购买的商品，输出 Top-5 推荐列表。
 
+## 基线重建（2026-09-12）
+
+本轮最终单目标测试（100000 用户）HR@5 从 **2.081% 提升到 2.433%（相对 +16.92%）**，采用原双塔、续训 DIN、RRF 与 90 天历史衰减。完整结论、指标口径、未采用实验、推理命令和本地验收状态见 [最终优化报告](docs/OPTIMIZATION_FINAL_20260913.md)。旧多目标指标仍可用于未来窗口推荐任务，与本轮单目标结果不能直接比较。
+
+新的基线入口为 `python code/run_baseline.py --run-dir baseline_runs/run_20260912`，完整数据划分、训练和评估约定见 [基线协议](docs/BASELINE_PROTOCOL.md)。新入口统一处理训练前缀、PAD/UNK、训练集 SVD、固定候选池与断点恢复，最终使用纯 DIN 分数排序。
+
+下文数值为历史实验结果，尚未通过新协议复验，不能直接作为修复后的效果结论。旧训练脚本和批处理入口保留用于追溯，新基线请使用上述命令。
+
 ![Python](https://img.shields.io/badge/Python-3.11-blue) ![PyTorch](https://img.shields.io/badge/PyTorch-2.0-orange)
 
 数据源: [McAuley-Lab/Amazon-Reviews-2023](https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023) (5-core 过滤版, rating≥4 记为正反馈)

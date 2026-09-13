@@ -178,7 +178,7 @@ class SASRecUserTower(nn.Module):
         # ---- 时间衰减加权池化 (距今时间 → exp 衰减) ----
         if self.use_time_decay and hist_time_deltas is not None:
             # recency[i] = 第 i 个交互距最后一个交互的总时间 (反向累积和)
-            recency = torch.flip(torch.cumsum(torch.flip(hist_time_deltas, dims=[1]), dim=1), dims=[1])
+            recency = torch.flip(torch.cumsum(torch.flip(hist_time_deltas, dims=[1]), dim=1), dims=[1]) - hist_time_deltas
             time_weight = torch.exp(-self.time_decay_lambda * recency)   # (B, hist_len)
             denom = (time_weight * hist_mask.squeeze(-1)).sum(dim=1).clamp(min=1)  # (B,)
             hist_vec = (seq_output * time_weight.unsqueeze(-1)).sum(dim=1) / denom.unsqueeze(-1)

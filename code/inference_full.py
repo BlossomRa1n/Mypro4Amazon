@@ -24,7 +24,7 @@ from data_loader_ext import (
     build_extended_user_features, merge_jsonl_features,
 )
 from model import TwoTowerV2Model
-from model_ext import DINExtendedModel
+from model_ext import DINExtendedModel, DINTokenizedModel
 from recall_fusion import multi_channel_recall
 from evaluate import split_train_val
 
@@ -48,17 +48,27 @@ def _save_csv(user_recall_items_dict, out_dir):
 
 
 def load_din_ext_model(device):
-    """加载 DINExtendedModel (优先 best, 回退 default)"""
-    candidates = [
-        (config.DIN_EXT_BEST_FILE, "DIN-Ext best"),
-        (config.DIN_EXT_MODEL_FILE, "DIN-Ext default"),
-    ]
+    """加载精排模型 (按 config.DIN_USE_TOKEN_MODEL 选择 DINTokenizedModel 或 DINExtendedModel)。"""
+    use_token = getattr(config, 'DIN_USE_TOKEN_MODEL', False)
+    if use_token:
+        candidates = [
+            (config.DIN_TOKEN_BEST_FILE, "DIN-Token best"),
+            (config.DIN_TOKEN_MODEL_FILE, "DIN-Token default"),
+        ]
+        model_class = DINTokenizedModel
+    else:
+        candidates = [
+            (config.DIN_EXT_BEST_FILE, "DIN-Ext best"),
+            (config.DIN_EXT_MODEL_FILE, "DIN-Ext default"),
+        ]
+        model_class = DINExtendedModel
+
     for path, label in candidates:
         if os.path.exists(path):
             print(f"    Loading {label} from: {path}")
             ckpt = torch.load(path, map_location=device, weights_only=False)
             cfg = ckpt['config']
-            model = DINExtendedModel(
+            model = model_class(
                 num_users=cfg['num_users'], num_items=cfg['num_items'],
                 num_brands=cfg['num_brands'], num_categories=cfg['num_categories'],
                 embed_dim=cfg.get('embed_dim', 256),
@@ -78,7 +88,7 @@ def load_din_ext_model(device):
             print(f"    Limits: users={limits['num_users']}, items={limits['num_items']}, "
                   f"brands={limits['num_brands']}, cats={limits['num_categories']}")
             return model, limits
-    print("    No DIN-Ext model found, using recall scores only")
+    print("    No rerank model found, using recall scores only")
     return None, None
 
 
