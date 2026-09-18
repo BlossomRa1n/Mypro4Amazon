@@ -481,11 +481,13 @@ def main():
     if identity_path.exists():
         saved_spec = json.loads(identity_path.read_text(encoding="utf-8"))
         if saved_spec != spec:
-            comparable_saved = dict(saved_spec)
-            comparable_current = dict(spec)
-            comparable_saved.pop("code_hash", None)
-            comparable_current.pop("code_hash", None)
-            if not allow_code_change or comparable_saved != comparable_current:
+            saved_args = saved_spec.get("args", {})
+            current_args = spec.get("args", {})
+            core_match = all(current_args.get(key) == value
+                             for key, value in saved_args.items())
+            saved_runtime = {key: saved_spec.get(key) for key in ("torch", "numpy", "device")}
+            current_runtime = {key: spec.get(key) for key in ("torch", "numpy", "device")}
+            if not allow_code_change or not core_match or saved_runtime != current_runtime:
                 raise ValueError("Run manifest differs; use a new output directory")
     write_json(identity_path, spec)
     print(json.dumps(spec, indent=2), flush=True)
