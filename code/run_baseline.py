@@ -412,6 +412,8 @@ def main():
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--eval-only-run", default="",
                         help="Reuse v2_best.pth and din_best.pth from a completed run; skip training")
+    parser.add_argument("--validation-only", action="store_true",
+                        help="Evaluate only the development split; never materialize test metrics")
     args = parser.parse_args()
     if args.dim % 2 or args.epochs < 1 or args.negatives < 1:
         parser.error("dim must be even; epochs and negatives must be positive")
@@ -474,7 +476,8 @@ def main():
                "fusion_mode": args.fusion_mode,
                "itemcf_half_life_days": args.itemcf_half_life_days,
                "splits": {}}
-    for split in ("val", "test"):
+    splits = ("val",) if args.validation_only else ("val", "test")
+    for split in splits:
         records = data.evaluation(split, args.final_users)
         targets = targets_for_protocol(data, records, args.protocol)
         model = make_model(data, args, "v2", device)
