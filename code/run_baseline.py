@@ -110,8 +110,11 @@ def validate_eval_source(model_run, data, args):
                 f"current={expected!r}"
             )
 
+    # The run manifest fingerprint identifies the prepared source run. Individual
+    # checkpoints retain their own identity so audited code-only recovery remains
+    # visible without making a compatible eval-only comparison ambiguous.
     checkpoint_source = {"run_dir": str(model_run),
-                         "run_identity": source_spec.get("identity")}
+                         "run_identity": fingerprint(source_spec)}
     checkpoint_identities = []
     for kind in ("v2", "din"):
         path = model_run / f"{kind}_best.pth"
@@ -128,8 +131,6 @@ def validate_eval_source(model_run, data, args):
             raise ValueError(f"{path} model_config does not match current arguments/data")
         checkpoint_identities.append(manifest.get("run_identity"))
     checkpoint_source["checkpoint_run_identities"] = checkpoint_identities
-    if checkpoint_source["run_identity"] is None:
-        checkpoint_source["run_identity"] = checkpoint_identities[0]
     return checkpoint_source
 
 
