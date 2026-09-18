@@ -46,6 +46,7 @@
 - 修复版基线：`/root/corrected_baseline_20260912`
 - 评估测试源：`/root/future_window_eval_src_20260913`
 - 结果和源代码归档：`server_snapshot/2026-09-12/`
+- 未来窗口正式结果：`server_snapshot/2026-09-19/`（服务器运行目录分别为 `/root/autodl-tmp/future_window_baseline_20260919`、`future_window_rrf_dev_20260919`、`future_window_rrf_final_20260919`）
 - 远程仓库：`https://github.com/BlossomRa1n/Mypro4Amazon.git`
 
 不要删除原始 Amazon 数据、最终模型包、best/latest checkpoint、配置、结果 JSON、测试或服务器归档。历史脚本可追溯，但新实验应从明确记录协议的入口开始。
