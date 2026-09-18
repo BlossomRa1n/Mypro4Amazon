@@ -31,9 +31,19 @@ def save_checkpoint(path, model, optimizer, scheduler, epoch, best, manifest, hi
                  "cuda_random": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else []}, path)
 
 
-def restore_checkpoint(path, model, optimizer, scheduler, manifest):
+def restore_checkpoint(path, model, optimizer, scheduler, manifest,
+                       allow_run_identity_change=False):
     state = torch.load(path, map_location="cpu", weights_only=False)
-    if state["manifest"] != manifest:
+    saved_manifest = state["manifest"]
+    compatible = saved_manifest == manifest
+    if (not compatible and allow_run_identity_change and
+            saved_manifest.get("run_identity") != manifest.get("run_identity")):
+        saved_copy = dict(saved_manifest)
+        expected_copy = dict(manifest)
+        saved_copy.pop("run_identity", None)
+        expected_copy.pop("run_identity", None)
+        compatible = saved_copy == expected_copy
+    if not compatible:
         raise ValueError("Checkpoint data/config/code identity mismatch")
     model.load_state_dict(state["model"])
     optimizer.load_state_dict(state["optimizer"])

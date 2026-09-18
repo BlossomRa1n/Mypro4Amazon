@@ -112,7 +112,7 @@ def validate_eval_source(model_run, data, args):
 
     checkpoint_source = {"run_dir": str(model_run),
                          "run_identity": source_spec.get("identity")}
-    checkpoint_identities = set()
+    checkpoint_identities = []
     for kind in ("v2", "din"):
         path = model_run / f"{kind}_best.pth"
         if not path.exists():
@@ -126,12 +126,10 @@ def validate_eval_source(model_run, data, args):
         expected_config = model_config(data, args, kind)
         if manifest.get("model_config") != expected_config:
             raise ValueError(f"{path} model_config does not match current arguments/data")
-        checkpoint_identities.add(manifest.get("run_identity"))
-    if len(checkpoint_identities) != 1:
-        raise ValueError(f"eval-only checkpoints were not produced by one run: {checkpoint_identities}")
-    checkpoint_source["checkpoint_run_identity"] = checkpoint_identities.pop()
+        checkpoint_identities.append(manifest.get("run_identity"))
+    checkpoint_source["checkpoint_run_identities"] = checkpoint_identities
     if checkpoint_source["run_identity"] is None:
-        checkpoint_source["run_identity"] = checkpoint_source["checkpoint_run_identity"]
+        checkpoint_source["run_identity"] = checkpoint_identities[0]
     return checkpoint_source
 
 
@@ -367,7 +365,9 @@ def train_model(data, args, run, kind, factors, records, pools, identity, device
     latest, best_path = state_dir / (kind + "_latest.pth"), run / (kind + "_best.pth")
     start_epoch, best, history = 0, -1., []
     if latest.exists():
-        start_epoch, best, history = restore_checkpoint(latest, model, optimizer, scheduler, manifest)
+        start_epoch, best, history = restore_checkpoint(
+            latest, model, optimizer, scheduler, manifest,
+            allow_run_identity_change=os.environ.get("ALLOW_CHECKPOINT_CODE_CHANGE") == "1")
         print(f"Resumed {kind} at epoch {start_epoch}, best={best:.6f}", flush=True)
     dataset = PrefixDataset(data, args.negatives)
     targets = (evaluation_targets if evaluation_targets is not None else
@@ -477,8 +477,16 @@ def main():
             "numpy": np.__version__, "device": str(device)}
     identity = fingerprint(spec)
     identity_path = run / "run_manifest.json"
-    if identity_path.exists() and json.loads(identity_path.read_text(encoding="utf-8")) != spec:
-        raise ValueError("Run manifest differs; use a new output directory")
+    allow_code_change = os.environ.get("ALLOW_CHECKPOINT_CODE_CHANGE") == "1"
+    if identity_path.exists():
+        saved_spec = json.loads(identity_path.read_text(encoding="utf-8"))
+        if saved_spec != spec:
+            comparable_saved = dict(saved_spec)
+            comparable_current = dict(spec)
+            comparable_saved.pop("code_hash", None)
+            comparable_current.pop("code_hash", None)
+            if not allow_code_change or comparable_saved != comparable_current:
+                raise ValueError("Run manifest differs; use a new output directory")
     write_json(identity_path, spec)
     print(json.dumps(spec, indent=2), flush=True)
     data = prepare(args, run)

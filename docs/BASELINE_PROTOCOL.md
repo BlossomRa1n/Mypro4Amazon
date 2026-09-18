@@ -30,6 +30,7 @@ The new authoritative entry point is `code/run_baseline.py`. The primary busines
 - Fixed initial budget: three epochs for V2 and DIN. Every epoch is recorded. This is a reproducible initial baseline, not a claim of hyperparameter optimality or convergence.
 - Each run directory contains data/config/code identities, distinct best and full-state latest checkpoints, epoch histories, predictions and final metrics. A mismatch aborts resume. A full run writes `COMPLETED.json` with `status=complete` only after both final split evaluations finish. A `--validation-only` run writes `status=validation-only`, lists only the `val` split, and must not be treated as a final test result.
 - A restart uses the exact same command. Completed epochs are skipped, optimizer/scheduler/RNG states are restored, and best models are used for inference. Partial epochs restart from the last complete epoch.
+- If a run was interrupted while a code-only audit fix was deployed, recovery may set `ALLOW_CHECKPOINT_CODE_CHANGE=1`; the runner still requires every non-code run parameter and checkpoint data/model manifest to match. This exception is for recovery only and is recorded in the launch environment.
 
 ## Commands
 
