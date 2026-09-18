@@ -40,6 +40,9 @@
   - 等待 RRF 开发集对照完成，只读取 `val` 结果；以 DIN HR@5 为主指标、候选池 HR@100 为平局破局指标且要求 DIN NDCG 不回退。
   - 只有开发集满足规则时才自动启动同一 checkpoint 的 100,000 用户最终测试，并再次交给 `monitor_training.py`；拒绝时写入 `AUTO_SELECT.json` 并结束，不触碰测试集调参。
 
+- 服务器空间恢复
+  - 2026-09-19 基线在数据盘满载时留下了不完整的 `din_best.pth.tmp`；已删除该临时文件并保留 epoch-1 continuation checkpoint。`tools/relocate_checkpoint.sh` 会在恢复训练写完 epoch-2 continuation 后将其迁到系统盘，再继续 epoch-3，避免原子保存需要额外 3.6 GiB 时再次失败。
+
 ## 验证结果
 
 - 本地完整测试：22 项通过。
