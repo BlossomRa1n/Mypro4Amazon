@@ -28,7 +28,7 @@ The new authoritative entry point is `code/run_baseline.py`. The primary busines
 - Report HR, normalized NDCG and Recall for ItemCF/V2/candidate pools; HR@5 and NDCG@5 for recall-only and pure DIN. Also report candidate counts and conditional ranking success given a candidate hit.
 - Candidate and random-negative AUC are different diagnostics; global cross-user AUC is not a selection metric. `baseline_runtime.pair_auc` implements within-user comparisons with half credit for ties.
 - Fixed initial budget: three epochs for V2 and DIN. Every epoch is recorded. This is a reproducible initial baseline, not a claim of hyperparameter optimality or convergence.
-- Each run directory contains data/config/code identities, distinct best and full-state latest checkpoints, epoch histories, predictions and final metrics. A mismatch aborts resume. `COMPLETED.json` is written only after both final split evaluations finish.
+- Each run directory contains data/config/code identities, distinct best and full-state latest checkpoints, epoch histories, predictions and final metrics. A mismatch aborts resume. A full run writes `COMPLETED.json` with `status=complete` only after both final split evaluations finish. A `--validation-only` run writes `status=validation-only`, lists only the `val` split, and must not be treated as a final test result.
 - A restart uses the exact same command. Completed epochs are skipped, optimizer/scheduler/RNG states are restored, and best models are used for inference. Partial epochs restart from the last complete epoch.
 
 ## Commands

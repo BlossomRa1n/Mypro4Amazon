@@ -1,8 +1,10 @@
 import copy
+import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -13,7 +15,8 @@ from baseline_data import BenchmarkData, PrefixDataset, ITEM_KEYS, USER_KEYS, co
 from future_window_data import FutureWindowData
 from baseline_runtime import pair_auc, quota_merge, ranking_metrics, save_checkpoint, restore_checkpoint
 from model_ext import DINExtendedModel
-from run_baseline import build_matrix, candidate_pools, score_din, targets_for_protocol
+from run_baseline import (build_matrix, candidate_pools, score_din,
+                          targets_for_protocol, validate_eval_source)
 
 
 def example():
@@ -79,6 +82,19 @@ class BaselineTests(unittest.TestCase):
         self.assertEqual(targets_for_protocol(data, records, "leave-two-out"),
                          [int(data.iid[records[0][1]])])
         self.assertTrue(set.union(*targets).isdisjoint(set(data.iid[data.train_mask])))
+
+    def test_eval_only_rejects_protocol_mismatch(self):
+        data = FutureWindowData(example(), hist_len=5, test_users=1)
+        args = SimpleNamespace(protocol="future-window", future_test_users=1,
+                               sample_users=0, seed=42, hist_len=5)
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "run_manifest.json").write_text(json.dumps({
+                "args": {"protocol": "leave-two-out", "future_test_users": 1,
+                         "sample_users": 0, "seed": 42, "hist_len": 5}
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "protocol mismatch"):
+                validate_eval_source(source, data, args)
 
     def test_metrics(self):
         self.assertEqual(pair_auc([.9, .2], [[.8], [.1]]), 1.)

@@ -95,6 +95,46 @@ def targets_for_protocol(data, records, protocol):
     return [int(data.iid[pos]) for _, pos in records]
 
 
+def validate_eval_source(model_run, data, args):
+    """Validate that eval-only checkpoints belong to this exact data protocol."""
+    source_manifest_path = model_run / "run_manifest.json"
+    if not source_manifest_path.exists():
+        raise ValueError(f"eval-only source is missing run_manifest.json: {model_run}")
+    source_spec = json.loads(source_manifest_path.read_text(encoding="utf-8"))
+    source_args = source_spec.get("args", {})
+    for key in ("protocol", "future_test_users", "sample_users", "seed", "hist_len"):
+        expected = getattr(args, key)
+        if source_args.get(key) != expected:
+            raise ValueError(
+                f"eval-only source {key} mismatch: source={source_args.get(key)!r}, "
+                f"current={expected!r}"
+            )
+
+    checkpoint_source = {"run_dir": str(model_run),
+                         "run_identity": source_spec.get("identity")}
+    checkpoint_identities = set()
+    for kind in ("v2", "din"):
+        path = model_run / f"{kind}_best.pth"
+        if not path.exists():
+            raise FileNotFoundError(path)
+        saved = torch.load(path, map_location="cpu", weights_only=False)
+        manifest = saved.get("manifest", {})
+        if manifest.get("kind") != kind:
+            raise ValueError(f"{path} has manifest kind {manifest.get('kind')!r}")
+        if manifest.get("data_id") != data.manifest["data_id"]:
+            raise ValueError(f"{path} data_id does not match current prepared data")
+        expected_config = model_config(data, args, kind)
+        if manifest.get("model_config") != expected_config:
+            raise ValueError(f"{path} model_config does not match current arguments/data")
+        checkpoint_identities.add(manifest.get("run_identity"))
+    if len(checkpoint_identities) != 1:
+        raise ValueError(f"eval-only checkpoints were not produced by one run: {checkpoint_identities}")
+    checkpoint_source["checkpoint_run_identity"] = checkpoint_identities.pop()
+    if checkpoint_source["run_identity"] is None:
+        checkpoint_source["run_identity"] = checkpoint_source["checkpoint_run_identity"]
+    return checkpoint_source
+
+
 def fit_assets(data, args, run):
     svd_path, cf_path = run / "svd.npy", run / "itemcf.pkl"
     matrix = None
@@ -451,10 +491,9 @@ def main():
     records = data.evaluation("val", args.eval_users)
     selection_targets = targets_for_protocol(data, records, args.protocol)
     model_run = Path(args.eval_only_run).resolve() if args.eval_only_run else run
+    checkpoint_source = {"run_dir": str(run), "run_identity": identity}
     if args.eval_only_run:
-        for name in ("v2_best.pth", "din_best.pth"):
-            if not (model_run / name).exists():
-                raise FileNotFoundError(model_run / name)
+        checkpoint_source = validate_eval_source(model_run, data, args)
         print(f"Reusing completed model checkpoints from {model_run}", flush=True)
     else:
         model = train_model(data, args, run, "v2", factors, records, None, identity, device,
@@ -475,6 +514,8 @@ def main():
                "selection_metric": f"val V2 HR@{args.candidates}, val pure DIN HR@5",
                "fusion_mode": args.fusion_mode,
                "itemcf_half_life_days": args.itemcf_half_life_days,
+               "validation_only": bool(args.validation_only),
+               "checkpoint_source": checkpoint_source,
                "splits": {}}
     splits = ("val",) if args.validation_only else ("val", "test")
     for split in splits:
@@ -507,18 +548,26 @@ def main():
         predictions = []
         for (uid, pos), ranked, pool, target_set in zip(records, final_rankings, pools, targets):
             target_ids = sorted(target_set) if isinstance(target_set, set) else [int(target_set)]
-            predictions.append({"user_id": data.users[uid],
-                                "target": data.items[data.iid[pos]],
-                                "targets": [data.items[i] for i in target_ids],
-                                "target_count": len(target_ids),
-                                "items": [data.items[i] for i in ranked[:5]],
-                                "candidate_hit": int(bool(set(target_ids).intersection(pool)))})
+            prediction = {"user_id": data.users[uid],
+                          "targets": [data.items[i] for i in target_ids],
+                          "target_count": len(target_ids),
+                          "items": [data.items[i] for i in ranked[:5]],
+                          "candidate_hit": int(bool(set(target_ids).intersection(pool)))}
+            if args.protocol == "future-window":
+                prediction["first_target"] = data.items[data.iid[pos]]
+            else:
+                prediction["target"] = data.items[data.iid[pos]]
+            predictions.append(prediction)
         write_json(run / (split + "_predictions.json"), predictions)
         print(json.dumps({"split": split, **metrics}, indent=2), flush=True)
         del din, saved
         gc.collect()
         torch.cuda.empty_cache()
-    write_json(run / "COMPLETED.json", {"status": "complete", "results": results})
+    completion_status = "validation-only" if args.validation_only else "complete"
+    write_json(run / "COMPLETED.json", {"status": completion_status,
+                                        "validation_only": bool(args.validation_only),
+                                        "splits": list(results["splits"]),
+                                        "results": results})
 
 
 if __name__ == "__main__":

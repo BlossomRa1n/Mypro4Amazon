@@ -56,9 +56,18 @@ def main():
             time.sleep(args.poll_seconds)
         code = process.returncode
 
-    complete = code == 0 and (run / "COMPLETED.json").exists()
-    state.update(status="complete" if complete else "failed", exit_code=code,
-                 completed_marker=(run / "COMPLETED.json").exists(),
+    marker_path = run / "COMPLETED.json"
+    marker_status = None
+    if marker_path.exists():
+        try:
+            marker_status = json.loads(marker_path.read_text(encoding="utf-8")).get("status")
+        except (OSError, ValueError):
+            marker_status = None
+    complete = code == 0 and marker_path.exists()
+    state.update(status=(marker_status if complete and marker_status else "complete")
+                 if complete else "failed", exit_code=code,
+                 completed_marker=marker_path.exists(),
+                 completion_status=marker_status,
                  log_bytes=log_path.stat().st_size,
                  ended_utc=utc_now(), last_heartbeat_utc=utc_now())
     save()

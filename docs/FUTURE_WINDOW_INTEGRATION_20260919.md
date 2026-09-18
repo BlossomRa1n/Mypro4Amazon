@@ -30,6 +30,15 @@
   - 结果 JSON 记录融合模式和半衰期，便于基线/优化方案对拍。
   - 新增 `--eval-only-run`，允许在不重新训练模型的情况下，复用已锁定 checkpoint 对比召回融合；只在开发集确认收益后才评估测试集。
   - 新增 `--validation-only`，让开发期对照完全不生成测试指标，避免误用测试结果调参。
+  - `--eval-only-run` 现在校验来源 run manifest、数据协议、`data_id` 和两个 checkpoint 的模型配置，并把 checkpoint 来源身份写入结果；不匹配会直接失败。
+  - `--validation-only` 的 `COMPLETED.json` 明确标记为 `validation-only`，预测 JSON 在未来窗口协议下使用 `first_target` 表示兼容性的首个目标，完整标签只使用 `targets`。
+
+- `tools/monitor_training.py`
+  - 读取完成标记中的状态，区分完整运行和 `validation-only`，避免监控结果把开发集对照误报成最终测试。
+
+- `tools/auto_select_future_window.py`
+  - 等待 RRF 开发集对照完成，只读取 `val` 结果；以 DIN HR@5 为主指标、候选池 HR@100 为平局破局指标且要求 DIN NDCG 不回退。
+  - 只有开发集满足规则时才自动启动同一 checkpoint 的 100,000 用户最终测试，并再次交给 `monitor_training.py`；拒绝时写入 `AUTO_SELECT.json` 并结束，不触碰测试集调参。
 
 ## 验证结果
 
