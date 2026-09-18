@@ -7,6 +7,7 @@ import argparse
 import gc
 import hashlib
 import json
+import math
 import pickle
 import time
 from itertools import islice
@@ -23,6 +24,7 @@ from tqdm import tqdm
 import config
 from baseline_data import BenchmarkData, PrefixDataset, USER_KEYS, ITEM_KEYS, collate, fingerprint, load_brands, load_data
 from baseline_runtime import atomic_save, pair_auc, quota_merge, ranking_metrics, restore_checkpoint, save_checkpoint, seed_all
+from future_window_data import FutureWindowData
 from model import TwoTowerV2Model
 from model_ext import DINExtendedModel
 
@@ -53,7 +55,8 @@ def prepare(args, run):
     for path in sorted(Path(args.data_dir).glob("raw/meta_categories/*.jsonl")):
         stat = path.stat()
         source_info.append([str(path.resolve()), stat.st_size, stat.st_mtime_ns])
-    prep_id = fingerprint([source_info, args.sample_users, args.seed, args.hist_len])
+    prep_id = fingerprint([source_info, args.sample_users, args.seed, args.hist_len,
+                           args.protocol, args.future_test_users])
     cache = run / "data.pkl"
     if cache.exists():
         with cache.open("rb") as stream:
@@ -65,16 +68,31 @@ def prepare(args, run):
     frame = load_data(args.data_dir, config.AMAZON_CATEGORIES, args.sample_users, args.seed)
     print(f"Loaded {len(frame):,} interactions; reading static brands...", flush=True)
     brands, sources = load_brands(args.data_dir, config.AMAZON_CATEGORIES, frame.parent_asin.unique())
-    data = BenchmarkData(frame, brands, args.hist_len, args.seed)
+    data_cls = FutureWindowData if args.protocol == "future-window" else BenchmarkData
+    if data_cls is FutureWindowData:
+        data = data_cls(frame, brands, args.hist_len, args.seed,
+                        test_users=args.future_test_users)
+    else:
+        data = data_cls(frame, brands, args.hist_len, args.seed)
     del frame
     gc.collect()
     data.manifest["brand_sources"] = sources
     data.manifest["source_files"] = source_info
+    data.manifest["protocol_mode"] = args.protocol
+    data.manifest["future_test_users"] = args.future_test_users
+    data.manifest["data_id"] = fingerprint(data.manifest)
     write_json(run / "data_manifest.json", data.manifest)
     with cache.with_suffix(".tmp").open("wb") as stream:
         pickle.dump({"prep_id": prep_id, "data": data}, stream, protocol=5)
     os.replace(cache.with_suffix(".tmp"), cache)
     return data
+
+
+def targets_for_protocol(data, records, protocol):
+    """Return one target set per record for the selected evaluation protocol."""
+    if protocol == "future-window":
+        return data.targets(records)
+    return [int(data.iid[pos]) for _, pos in records]
 
 
 def fit_assets(data, args, run):
@@ -173,7 +191,29 @@ def recall(model, data, records, device, k):
     return rankings, scored
 
 
-def candidate_pools(data, records, v2_scores, cf, budget):
+def rrf_merge(channels, weights, budget, excluded=(), rrf_k=60):
+    """Rank-fusion merge using only channel order, with deterministic ties."""
+    excluded = set(excluded)
+    fused = {}
+    for channel, weight in zip(channels, weights):
+        if weight <= 0:
+            continue
+        entries = (sorted(channel.items(), key=lambda pair: (-pair[1], pair[0]))
+                   if isinstance(channel, dict) else
+                   sorted(channel, key=lambda pair: (-pair[1], pair[0])))
+        for rank, (item, _) in enumerate(entries, start=1):
+            item = int(item)
+            if item not in excluded:
+                fused[item] = fused.get(item, 0.) + float(weight) / (rrf_k + rank)
+    return dict(sorted(fused.items(), key=lambda pair: (-pair[1], pair[0]))[:budget])
+
+
+def candidate_pools(data, records, v2_scores, cf, budget, fusion_mode="quota",
+                    half_life_days=0.):
+    if fusion_mode not in ("quota", "rrf"):
+        raise ValueError(fusion_mode)
+    if half_life_days < 0:
+        raise ValueError("half_life_days must be nonnegative")
     neighbors, similarity = cf
     hot = np.argsort(-data.train_counts, kind="stable")
     hot = [int(i) for i in hot if i >= 2 and data.train_counts[i] > 0]
@@ -183,12 +223,18 @@ def candidate_pools(data, records, v2_scores, cf, budget):
     for (uid, pos), v2 in tqdm(zip(records, v2_scores), total=len(records), desc="Candidate fusion"):
         end = data.history_end(uid, pos)
         seen = set(data.iid[data.starts[uid]:end].tolist())
-        hist = data.iid[max(data.starts[uid], end - data.hist_len):end]
+        hist_start = max(data.starts[uid], end - data.hist_len)
+        hist_positions = np.arange(hist_start, end, dtype=np.int64)
+        hist = data.iid[hist_positions]
         cf_score = {}
-        for iid in hist:
+        for event_pos, iid in zip(hist_positions, hist):
+            decay = 1.
+            if half_life_days > 0 and end > data.starts[uid]:
+                age_days = max(float(data.ts[end - 1] - data.ts[event_pos]) / 86400000., 0.)
+                decay = math.exp(-math.log(2.) * age_days / half_life_days)
             for candidate, score in zip(neighbors[iid], similarity[iid]):
                 if candidate >= 2 and candidate not in seen and score > 0:
-                    cf_score[int(candidate)] = cf_score.get(int(candidate), 0.) + float(score)
+                    cf_score[int(candidate)] = cf_score.get(int(candidate), 0.) + float(score) * decay
         cf_score = dict(sorted(cf_score.items(), key=lambda x: (-x[1], x[0]))[:budget])
         for iid in hot:
             if len(cf_score) >= budget:
@@ -202,7 +248,11 @@ def candidate_pools(data, records, v2_scores, cf, budget):
             eligible = list(islice((i for i in category_hot.get(cat, ()) if i not in seen), 20))
             cat_score.update({i: float(count / max(len(hist), 1)) for i in eligible})
         hot_score = {i: 1 / (rank + 1) for rank, i in enumerate(islice((i for i in hot if i not in seen), 5))}
-        merged = quota_merge([cf_score, v2, cat_score, hot_score], [1.5, 1., .7, .05], budget, seen)
+        channels = [cf_score, v2, cat_score, hot_score]
+        weights = [1.5, 1., .7, .05]
+        merged = (rrf_merge(channels, weights, budget, seen)
+                  if fusion_mode == "rrf" else
+                  quota_merge(channels, weights, budget, seen))
         for iid in hot:
             if len(merged) >= budget:
                 break
@@ -280,7 +330,8 @@ def train_model(data, args, run, kind, factors, records, pools, identity, device
         start_epoch, best, history = restore_checkpoint(latest, model, optimizer, scheduler, manifest)
         print(f"Resumed {kind} at epoch {start_epoch}, best={best:.6f}", flush=True)
     dataset = PrefixDataset(data, args.negatives)
-    targets = evaluation_targets if evaluation_targets is not None else [int(data.iid[pos]) for _, pos in records]
+    targets = (evaluation_targets if evaluation_targets is not None else
+               targets_for_protocol(data, records, args.protocol))
     for epoch in range(start_epoch, args.epochs):
         dataset.epoch = epoch
         generator = torch.Generator().manual_seed(args.seed + epoch)
@@ -338,27 +389,40 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", default=os.environ.get("AMAZON_DATA_PATH", config.DATA_PATH))
     parser.add_argument("--run-dir", required=True)
+    parser.add_argument("--protocol", choices=("future-window", "leave-two-out"),
+                        default="future-window",
+                        help="Primary benchmark protocol; leave-two-out is legacy diagnostic only")
     parser.add_argument("--sample-users", type=int, default=0)
     parser.add_argument("--eval-users", type=int, default=10000)
     parser.add_argument("--final-users", type=int, default=100000)
+    parser.add_argument("--future-test-users", type=int, default=100000,
+                        help="Fixed disjoint future-window test users; use a smaller value for smoke runs")
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--dim", type=int, default=256)
     parser.add_argument("--hist-len", type=int, default=50)
     parser.add_argument("--negatives", type=int, default=4)
     parser.add_argument("--candidates", type=int, default=100)
     parser.add_argument("--cf-neighbors", type=int, default=100)
+    parser.add_argument("--fusion-mode", choices=("quota", "rrf"), default="quota")
+    parser.add_argument("--itemcf-half-life-days", type=float, default=0.)
     parser.add_argument("--v2-batch", type=int, default=1024)
     parser.add_argument("--din-batch", type=int, default=256)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--eval-only-run", default="",
+                        help="Reuse v2_best.pth and din_best.pth from a completed run; skip training")
     args = parser.parse_args()
     if args.dim % 2 or args.epochs < 1 or args.negatives < 1:
         parser.error("dim must be even; epochs and negatives must be positive")
     if min(args.dim, args.hist_len, args.candidates, args.cf_neighbors) < 1 or min(args.v2_batch, args.din_batch) < 2:
         parser.error("dimensions and candidate counts must be positive; batch sizes must be at least 2")
-    if min(args.sample_users, args.eval_users, args.final_users, args.workers) < 0:
+    if args.itemcf_half_life_days < 0:
+        parser.error("itemcf-half-life-days must be nonnegative")
+    if min(args.sample_users, args.eval_users, args.final_users, args.future_test_users, args.workers) < 0:
         parser.error("user limits and workers must be nonnegative")
+    if args.protocol == "future-window" and args.future_test_users < 1:
+        parser.error("future-test-users must be positive for future-window protocol")
     run = Path(args.run_dir)
     run.mkdir(parents=True, exist_ok=True)
     seed_all(args.seed)
@@ -383,31 +447,47 @@ def main():
     if args.prepare_only:
         return
     records = data.evaluation("val", args.eval_users)
-    model = train_model(data, args, run, "v2", factors, records, None, identity, device)
-    _, scores = recall(model, data, records, device, args.candidates)
-    pools, _ = candidate_pools(data, records, scores, cf, args.candidates)
-    del model
-    gc.collect()
-    torch.cuda.empty_cache()
-    din = train_model(data, args, run, "din", factors, records, pools, identity, device)
-    del din
-    gc.collect()
-    torch.cuda.empty_cache()
+    selection_targets = targets_for_protocol(data, records, args.protocol)
+    model_run = Path(args.eval_only_run).resolve() if args.eval_only_run else run
+    if args.eval_only_run:
+        for name in ("v2_best.pth", "din_best.pth"):
+            if not (model_run / name).exists():
+                raise FileNotFoundError(model_run / name)
+        print(f"Reusing completed model checkpoints from {model_run}", flush=True)
+    else:
+        model = train_model(data, args, run, "v2", factors, records, None, identity, device,
+                            evaluation_targets=selection_targets)
+        _, scores = recall(model, data, records, device, args.candidates)
+        pools, _ = candidate_pools(data, records, scores, cf, args.candidates,
+                                   args.fusion_mode, args.itemcf_half_life_days)
+        del model
+        gc.collect()
+        torch.cuda.empty_cache()
+        din = train_model(data, args, run, "din", factors, records, pools, identity, device,
+                          evaluation_targets=selection_targets)
+        del din
+        gc.collect()
+        torch.cuda.empty_cache()
     results = {"data_id": data.manifest["data_id"], "run_identity": identity,
-               "selection_metric": f"val V2 HR@{args.candidates}, val pure DIN HR@5", "splits": {}}
+               "protocol": args.protocol,
+               "selection_metric": f"val V2 HR@{args.candidates}, val pure DIN HR@5",
+               "fusion_mode": args.fusion_mode,
+               "itemcf_half_life_days": args.itemcf_half_life_days,
+               "splits": {}}
     for split in ("val", "test"):
         records = data.evaluation(split, args.final_users)
-        targets = [int(data.iid[pos]) for _, pos in records]
+        targets = targets_for_protocol(data, records, args.protocol)
         model = make_model(data, args, "v2", device)
-        saved = torch.load(run / "v2_best.pth", map_location="cpu", weights_only=False)
+        saved = torch.load(model_run / "v2_best.pth", map_location="cpu", weights_only=False)
         model.load_state_dict(saved["model"])
         rankings, scores = recall(model, data, records, device, args.candidates)
-        pools, cf_rankings = candidate_pools(data, records, scores, cf, args.candidates)
+        pools, cf_rankings = candidate_pools(data, records, scores, cf, args.candidates,
+                                             args.fusion_mode, args.itemcf_half_life_days)
         del model, saved
         gc.collect()
         torch.cuda.empty_cache()
         din = make_model(data, args, "din", device)
-        saved = torch.load(run / "din_best.pth", map_location="cpu", weights_only=False)
+        saved = torch.load(model_run / "din_best.pth", map_location="cpu", weights_only=False)
         din.load_state_dict(saved["model"])
         final_rankings = score_din(din, data, records, pools, device)
         metrics = {"v2": ranking_metrics(rankings, targets, args.candidates),
@@ -419,11 +499,17 @@ def main():
         cover = metrics["candidate_pool"]["hr"]
         metrics["din_conditional_hr5"] = metrics["din"]["hr"] / cover if cover else 0.
         results["splits"][split] = metrics
+        results["model_run"] = str(model_run)
         write_json(run / "results.json", results)
-        predictions = [{"user_id": data.users[uid], "target": data.items[data.iid[pos]],
-                        "items": [data.items[i] for i in ranked[:5]],
-                        "candidate_hit": int(data.iid[pos] in pool)}
-                       for (uid, pos), ranked, pool in zip(records, final_rankings, pools)]
+        predictions = []
+        for (uid, pos), ranked, pool, target_set in zip(records, final_rankings, pools, targets):
+            target_ids = sorted(target_set) if isinstance(target_set, set) else [int(target_set)]
+            predictions.append({"user_id": data.users[uid],
+                                "target": data.items[data.iid[pos]],
+                                "targets": [data.items[i] for i in target_ids],
+                                "target_count": len(target_ids),
+                                "items": [data.items[i] for i in ranked[:5]],
+                                "candidate_hit": int(bool(set(target_ids).intersection(pool)))})
         write_json(run / (split + "_predictions.json"), predictions)
         print(json.dumps({"split": split, **metrics}, indent=2), flush=True)
         del din, saved

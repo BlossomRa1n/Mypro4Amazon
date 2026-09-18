@@ -13,7 +13,7 @@ from baseline_data import BenchmarkData, PrefixDataset, ITEM_KEYS, USER_KEYS, co
 from future_window_data import FutureWindowData
 from baseline_runtime import pair_auc, quota_merge, ranking_metrics, save_checkpoint, restore_checkpoint
 from model_ext import DINExtendedModel
-from run_baseline import build_matrix, candidate_pools, score_din
+from run_baseline import build_matrix, candidate_pools, score_din, targets_for_protocol
 
 
 def example():
@@ -70,6 +70,16 @@ class BaselineTests(unittest.TestCase):
         self.assertEqual(set(data.iid[cutoff:end]), set(data.targets([(uid, cutoff)])[0]))
         self.assertTrue(np.all(data.ts[start:cutoff] < data.ts[cutoff]))
 
+    def test_future_targets_flow_through_runner_helper(self):
+        data = FutureWindowData(example(), hist_len=5, test_users=1)
+        records = data.evaluation("test", 1)
+        targets = targets_for_protocol(data, records, "future-window")
+        self.assertIsInstance(targets[0], set)
+        self.assertEqual(targets, data.targets(records))
+        self.assertEqual(targets_for_protocol(data, records, "leave-two-out"),
+                         [int(data.iid[records[0][1]])])
+        self.assertTrue(set.union(*targets).isdisjoint(set(data.iid[data.train_mask])))
+
     def test_metrics(self):
         self.assertEqual(pair_auc([.9, .2], [[.8], [.1]]), 1.)
         self.assertEqual(pair_auc([.5], [[.5]]), .5)
@@ -83,6 +93,19 @@ class BaselineTests(unittest.TestCase):
         self.assertEqual(len(result), 75)
         self.assertTrue(set(result).isdisjoint({0, 1}))
         self.assertEqual(quota_merge([channel], [0.], 75), {})
+
+    def test_rrf_candidate_fusion_and_half_life(self):
+        data = BenchmarkData(example(), hist_len=5)
+        records = data.evaluation("test", 3)
+        neighbors = np.tile(np.arange(2, len(data.items)), (len(data.items), 1))
+        similarities = np.ones_like(neighbors, dtype=np.float32)
+        scores = [{i: float(len(data.items) - i) for i in range(2, len(data.items))} for _ in records]
+        pools, _ = candidate_pools(data, records, scores, (neighbors, similarities), 20,
+                                   fusion_mode="rrf", half_life_days=90.)
+        for (uid, pos), pool in zip(records, pools):
+            seen = set(data.iid[data.starts[uid]:data.history_end(uid, pos)])
+            self.assertEqual(len(pool), 20)
+            self.assertTrue(seen.isdisjoint(pool))
 
     def test_candidates_exclude_history_beyond_model_window(self):
         data = BenchmarkData(example(), hist_len=2)
