@@ -35,6 +35,21 @@ def main():
     final = Path(args.final_dir)
     decision_path = candidate / "AUTO_SELECT.json"
     while not (candidate / "COMPLETED.json").exists():
+        baseline_marker = baseline / "COMPLETED.json"
+        chain_status = candidate / "chain_status"
+        if baseline_marker.exists():
+            marker = read_json(baseline_marker)
+            if marker.get("status") not in ("complete", "validation-only"):
+                decision_path.write_text(json.dumps({
+                    "status": "rejected", "reason": "baseline failed",
+                    "baseline_marker": marker,
+                }, indent=2), encoding="utf-8")
+                return 0
+        if chain_status.exists():
+            decision_path.write_text(json.dumps({
+                "status": "rejected", "reason": chain_status.read_text(encoding="utf-8").strip(),
+            }, indent=2), encoding="utf-8")
+            return 0
         time.sleep(max(1, args.poll_seconds))
 
     candidate_marker = read_json(candidate / "COMPLETED.json")
