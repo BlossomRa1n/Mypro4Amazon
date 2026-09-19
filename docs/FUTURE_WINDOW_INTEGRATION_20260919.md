@@ -72,3 +72,28 @@
 2. 以最终测试的候选池 HR@100 `12.275%` 和 DIN 条件 HR@5 `31.30%` 拆解瓶颈：当前召回覆盖率仍是第一优先级，精排在候选命中条件下已有较好的排序能力。
 3. 在固定未来窗口开发集上一次只改变一个变量，优先筛选候选预算、ItemCF 衰减和召回权重；通过门控后才使用测试集确认。
 4. 精排结构优化（raw-slice token、RankMixer）必须重新训练并沿用同一未来窗口协议，不能复用旧 leave-two-out checkpoint 得出主指标结论。
+
+## 2026-09-19 wcf2 final
+
+在固定 100,000 个开发用户上，严格配对选择接受 `RRF + ItemCF half-life 180 days + fusion_weights [2.0, 1.0, 0.7, 0.05]`：DIN HR@5 从 `3.556%` 提升到 `4.396%`，配对差值 `+0.840` 个百分点（gained `1856`、lost `1016`，描述性 bootstrap 95% 区间 `[+0.735,+0.946]`）；NDCG@5 从 `1.5748%` 提升到 `1.9801%`。
+
+最终测试使用同一 checkpoint、独立的 100,000 个测试用户，结果为：
+
+- DIN HR@5 `4.121%`，NDCG@5 `1.8663%`，Recall@5 `2.4092%`。
+- 候选池 HR@100 `12.284%`，DIN 条件 HR@5 `33.5477%`。
+- 相对未来窗口 quota 基线（HR@5 `3.468%`、NDCG@5 `1.5404%`），HR@5 增加 `0.653` 个百分点（约 `18.8%`），NDCG@5 增加 `0.326` 个百分点（约 `21.2%`）。
+- 相对已完成的 RRF + half-life 180 默认权重方案（HR@5 `3.857%`），HR@5 增加 `0.264` 个百分点（约 `6.9%`）。
+
+最终目录为 `/root/autodl-tmp/future_window_rrf_final_wcf2_hl180_20260919`，本地快照为 `server_snapshot/2026-09-19/parameter_sweeps/rrf_wcf2_hl180_final/`。本轮没有训练新 checkpoint，只复用未来窗口基线的 V2/DIN 权重；监控器记录 `exit_code=0`，无残留评估进程。
+
+随后对 Category 权重做了一个单变量开发集检查：`[2.0, 1.0, 0.4, 0.05]` 在 100,000 个开发用户上得到 DIN HR@5 `4.382%`、NDCG@5 `1.975%`，低于入选的 Category `0.7`（`4.396%`、`1.980%`），因此拒绝，不进入测试集。结果快照为 `server_snapshot/2026-09-19/parameter_sweeps/rrf_wcf2_wcat04_hl180/`；该次 eval-only 运行生成的约 1 GiB 缓存已从服务器删除，只保留结果、预测和监控文件。
+
+## 2026-09-19 cf_neighbors 验证
+
+在固定的 100,000 开发用户、同一未来窗口协议、RRF 权重 `[2.0, 1.0, 0.7, 0.05]` 和 ItemCF 半衰期 180 天上，只改变 ItemCF 邻居截断数。所有运行复用同一份 V2/DIN checkpoint，验证阶段使用 `validation-only`，通过后才使用独立测试用户。
+
+- `cf_neighbors=200`：开发集 ItemCF HR@100 `12.587%`，候选池 HR@100 `12.744%`，DIN HR@5 `4.388%`，NDCG@5 `1.97730%`。相对当前 `cf_neighbors=100` 入选方案，配对 gained `230`、lost `238`，HR@5 `-0.008` 个百分点，NDCG `-0.00285` 个百分点，拒绝。快照为 `server_snapshot/2026-09-19/parameter_sweeps/rrf_wcf2_hl180_cf200_dev/`。
+- `cf_neighbors=300`：开发集 ItemCF HR@100 `12.756%`，候选池 HR@100 `12.904%`，DIN HR@5 `4.397%`，NDCG@5 `1.98105%`。相对 `cf_neighbors=100`，配对 gained `323`、lost `322`，HR@5 增加 `0.001` 个百分点，NDCG 增加 `0.00090` 个百分点；按既定门控通过，但开发集增幅很小。快照为 `server_snapshot/2026-09-19/parameter_sweeps/rrf_wcf2_hl180_cf300_dev/`。
+- `cf_neighbors=300` 独立测试：DIN HR@5 `4.193%`，NDCG@5 `1.88455%`，Recall@5 `2.44663%`，候选池 HR@100 `12.888%`，候选命中条件下 DIN HR@5 `32.534%`。相对当前 `cf_neighbors=100` 测试结果（`4.121%` / `1.86634%`），配对 gained `365`、lost `293`，HR@5 增加 `0.072` 个百分点，描述性 bootstrap 95% 区间 `[+0.022, +0.122]`，NDCG 增加 `0.01822` 个百分点。快照为 `server_snapshot/2026-09-19/parameter_sweeps/rrf_wcf2_hl180_cf300_final/`。
+
+因此，当前推荐配置更新为 `cf_neighbors=300`、RRF、ItemCF half-life `180` 天和融合权重 `[2.0, 1.0, 0.7, 0.05]`。这次没有训练新模型，测试运行由监控器托管并以 `exit_code=0` 完成；V2/DIN checkpoint 仍来自 `future_window_baseline_20260919`。

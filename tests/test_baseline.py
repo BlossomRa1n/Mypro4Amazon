@@ -15,8 +15,9 @@ from baseline_data import BenchmarkData, PrefixDataset, ITEM_KEYS, USER_KEYS, co
 from future_window_data import FutureWindowData
 from baseline_runtime import pair_auc, quota_merge, ranking_metrics, save_checkpoint, restore_checkpoint
 from model_ext import DINExtendedModel
-from run_baseline import (build_matrix, candidate_pools, score_din,
-                          targets_for_protocol, validate_eval_source)
+from run_baseline import (DEFAULT_FUSION_WEIGHTS, build_matrix, candidate_pools,
+                          score_din, targets_for_protocol, validate_eval_source,
+                          validate_fusion_weights)
 
 
 def example():
@@ -110,6 +111,14 @@ class BaselineTests(unittest.TestCase):
         self.assertTrue(set(result).isdisjoint({0, 1}))
         self.assertEqual(quota_merge([channel], [0.], 75), {})
 
+    def test_fusion_weights_default_and_validation(self):
+        self.assertEqual(validate_fusion_weights(None), list(DEFAULT_FUSION_WEIGHTS))
+        self.assertEqual(validate_fusion_weights((0, 2, 0.5, 0)), [0., 2., .5, 0.])
+        for invalid in ((1., 2.), (1., 2., 3., 4., 5.), (0., 0., 0., 0.),
+                        (1., float("nan"), 0., 0.), (-1., 0., 0., 0.)):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                validate_fusion_weights(invalid)
+
     def test_rrf_candidate_fusion_and_half_life(self):
         data = BenchmarkData(example(), hist_len=5)
         records = data.evaluation("test", 3)
@@ -122,6 +131,26 @@ class BaselineTests(unittest.TestCase):
             seen = set(data.iid[data.starts[uid]:data.history_end(uid, pos)])
             self.assertEqual(len(pool), 20)
             self.assertTrue(seen.isdisjoint(pool))
+
+    def test_candidate_details_preserve_channel_and_uncapped_sets(self):
+        data = BenchmarkData(example(), hist_len=5)
+        records = data.evaluation("test", 3)
+        neighbors = np.tile(np.arange(2, len(data.items)), (len(data.items), 1))
+        similarities = np.ones_like(neighbors, dtype=np.float32)
+        scores = [{i: float(len(data.items) - i) for i in range(2, len(data.items))}
+                  for _ in records]
+        pools, _, details = candidate_pools(
+            data, records, scores, (neighbors, similarities), 20,
+            fusion_mode="rrf", return_details=True)
+        self.assertEqual(len(details), len(records))
+        self.assertEqual(set(details[0]), {"channels", "full_channels", "seen"})
+        for pool, detail in zip(pools, details):
+            self.assertEqual(len(detail["channels"]), 4)
+            self.assertEqual(len(detail["full_channels"]), 4)
+            for actual, full in zip(detail["channels"], detail["full_channels"]):
+                if full is not None:
+                    self.assertTrue(set(actual).issubset(full))
+            self.assertTrue(set(pool).isdisjoint(detail["seen"]))
 
     def test_candidates_exclude_history_beyond_model_window(self):
         data = BenchmarkData(example(), hist_len=2)

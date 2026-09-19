@@ -91,6 +91,7 @@ class SelectionWorkflowTests(unittest.TestCase):
                                        itemcf_half_life_days=0., eval_only_run=""), "code_hash": "source"}
         self.trial_spec = {"args": dict(common, run_dir=str(self.candidate), final_users=1,
                                         validation_only=True, fusion_mode="rrf",
+                                        fusion_weights=[2., 1., .25, 0.],
                                         itemcf_half_life_days=90., eval_only_run=str(self.baseline)), "code_hash": "source"}
         base_id = selection.fingerprint(self.base_spec)
         self.base_result = self.result(self.base_spec, self.base_rows,
@@ -116,6 +117,7 @@ class SelectionWorkflowTests(unittest.TestCase):
         return {"data_id": "same-data", "run_identity": selection.fingerprint(spec),
                 "protocol": "future-window", "validation_only": spec["args"]["validation_only"],
                 "checkpoint_source": source, "fusion_mode": spec["args"]["fusion_mode"],
+                "fusion_weights": spec["args"].get("fusion_weights", [1.5, 1., .7, .05]),
                 "itemcf_half_life_days": spec["args"]["itemcf_half_life_days"], "splits": splits}
 
     def write_fixture(self):
@@ -234,6 +236,8 @@ class SelectionWorkflowTests(unittest.TestCase):
         self.assertEqual(command[command.index("--final-users") + 1], "10")
         self.assertEqual(command[command.index("--dim") + 1], "8")
         self.assertEqual(command[command.index("--itemcf-half-life-days") + 1], "90.0")
+        weights = command.index("--fusion-weights")
+        self.assertEqual(command[weights + 1:weights + 5], ["2.0", "1.0", "0.25", "0.0"])
         decision = selection.read_json(self.candidate / "AUTO_SELECT.json")
         self.assertEqual(decision["final_launch_status"], "already-started")
         self.assertEqual(decision["final_monitor_pid"], 1234)

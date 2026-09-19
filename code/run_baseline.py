@@ -29,6 +29,12 @@ from model import TwoTowerV2Model
 from model_ext import DINExtendedModel
 
 
+# Candidate channels are ordered as: ItemCF, V2, category preference, hot.
+# Keep this value stable so runs that omit --fusion-weights reproduce the
+# original baseline exactly.
+DEFAULT_FUSION_WEIGHTS = (1.5, 1.0, 0.7, 0.05)
+
+
 def write_json(path, value):
     path = Path(path)
     temp = path.with_suffix(".tmp")
@@ -248,24 +254,32 @@ def rrf_merge(channels, weights, budget, excluded=(), rrf_k=60):
 
 
 def candidate_pools(data, records, v2_scores, cf, budget, fusion_mode="quota",
-                    half_life_days=0.):
+                    half_life_days=0., fusion_weights=None, return_details=False):
+    """Build the fused candidate pool using the four baseline channels.
+
+    ``return_details`` is intentionally opt-in for offline attribution.  The
+    default two-value return contract is kept stable for training/evaluation.
+    Details contain the exact per-channel candidates plus uncapped train-only
+    reachability sets for ItemCF, category and hot channels.
+    """
     if fusion_mode not in ("quota", "rrf"):
         raise ValueError(fusion_mode)
     if half_life_days < 0:
         raise ValueError("half_life_days must be nonnegative")
+    weights = validate_fusion_weights(fusion_weights)
     neighbors, similarity = cf
     hot = np.argsort(-data.train_counts, kind="stable")
     hot = [int(i) for i in hot if i >= 2 and data.train_counts[i] > 0]
     category_hot = {cat: [i for i in hot if data.item_category[i] == cat]
                     for cat in range(2, len(data.categories))}
-    pools, cf_rankings = [], []
+    pools, cf_rankings, details = [], [], []
     for (uid, pos), v2 in tqdm(zip(records, v2_scores), total=len(records), desc="Candidate fusion"):
         end = data.history_end(uid, pos)
         seen = set(data.iid[data.starts[uid]:end].tolist())
         hist_start = max(data.starts[uid], end - data.hist_len)
         hist_positions = np.arange(hist_start, end, dtype=np.int64)
         hist = data.iid[hist_positions]
-        cf_score = {}
+        cf_raw = {}
         for event_pos, iid in zip(hist_positions, hist):
             decay = 1.
             if half_life_days > 0 and end > data.starts[uid]:
@@ -273,8 +287,8 @@ def candidate_pools(data, records, v2_scores, cf, budget, fusion_mode="quota",
                 decay = math.exp(-math.log(2.) * age_days / half_life_days)
             for candidate, score in zip(neighbors[iid], similarity[iid]):
                 if candidate >= 2 and candidate not in seen and score > 0:
-                    cf_score[int(candidate)] = cf_score.get(int(candidate), 0.) + float(score) * decay
-        cf_score = dict(sorted(cf_score.items(), key=lambda x: (-x[1], x[0]))[:budget])
+                    cf_raw[int(candidate)] = cf_raw.get(int(candidate), 0.) + float(score) * decay
+        cf_score = dict(sorted(cf_raw.items(), key=lambda x: (-x[1], x[0]))[:budget])
         for iid in hot:
             if len(cf_score) >= budget:
                 break
@@ -283,12 +297,14 @@ def candidate_pools(data, records, v2_scores, cf, budget, fusion_mode="quota",
         cf_rankings.append(list(cf_score))
         cats, counts = np.unique(data.item_category[hist], return_counts=True)
         cat_score = {}
+        cat_full = set()
         for cat, count in sorted(zip(cats, counts), key=lambda x: -x[1])[:3]:
-            eligible = list(islice((i for i in category_hot.get(cat, ()) if i not in seen), 20))
+            eligible_all = [i for i in category_hot.get(cat, ()) if i not in seen]
+            cat_full.update(eligible_all)
+            eligible = eligible_all[:20]
             cat_score.update({i: float(count / max(len(hist), 1)) for i in eligible})
         hot_score = {i: 1 / (rank + 1) for rank, i in enumerate(islice((i for i in hot if i not in seen), 5))}
         channels = [cf_score, v2, cat_score, hot_score]
-        weights = [1.5, 1., .7, .05]
         merged = (rrf_merge(channels, weights, budget, seen)
                   if fusion_mode == "rrf" else
                   quota_merge(channels, weights, budget, seen))
@@ -298,7 +314,35 @@ def candidate_pools(data, records, v2_scores, cf, budget, fusion_mode="quota",
             if iid not in seen and iid not in merged:
                 merged[iid] = -1.0
         pools.append(merged)
+        if return_details:
+            hot_full = set(i for i in hot if i not in seen)
+            details.append({
+                "channels": [cf_score, v2, cat_score, hot_score],
+                # ItemCF uses hot items as its documented refill path.  Keep
+                # those in its uncapped reachability set for attribution.
+                "full_channels": [set(cf_raw) | hot_full, None, cat_full, hot_full],
+                "seen": seen,
+            })
+    if return_details:
+        return pools, cf_rankings, details
     return pools, cf_rankings
+
+
+def validate_fusion_weights(weights):
+    """Validate and normalize the four candidate-channel fusion weights."""
+    if weights is None:
+        return list(DEFAULT_FUSION_WEIGHTS)
+    try:
+        normalized = [float(value) for value in weights]
+    except (TypeError, ValueError) as error:
+        raise ValueError("fusion weights must be four finite nonnegative numbers") from error
+    if len(normalized) != len(DEFAULT_FUSION_WEIGHTS):
+        raise ValueError("fusion weights must contain exactly four values: itemcf v2 category hot")
+    if not all(math.isfinite(value) and value >= 0. for value in normalized):
+        raise ValueError("fusion weights must be four finite nonnegative numbers")
+    if not any(normalized):
+        raise ValueError("at least one fusion weight must be positive")
+    return normalized
 
 
 def score_din(model, data, records, pools, device, microbatch=512):
@@ -445,6 +489,10 @@ def main():
     parser.add_argument("--candidates", type=int, default=100)
     parser.add_argument("--cf-neighbors", type=int, default=100)
     parser.add_argument("--fusion-mode", choices=("quota", "rrf"), default="quota")
+    parser.add_argument("--fusion-weights", type=float, nargs=4,
+                        metavar=("ITEMCF", "V2", "CATEGORY", "HOT"),
+                        default=list(DEFAULT_FUSION_WEIGHTS),
+                        help="Four nonnegative channel weights: ItemCF, V2, category, hot")
     parser.add_argument("--itemcf-half-life-days", type=float, default=0.)
     parser.add_argument("--v2-batch", type=int, default=1024)
     parser.add_argument("--din-batch", type=int, default=256)
@@ -462,6 +510,10 @@ def main():
         parser.error("dimensions and candidate counts must be positive; batch sizes must be at least 2")
     if args.itemcf_half_life_days < 0:
         parser.error("itemcf-half-life-days must be nonnegative")
+    try:
+        args.fusion_weights = validate_fusion_weights(args.fusion_weights)
+    except ValueError as error:
+        parser.error(str(error))
     if min(args.sample_users, args.eval_users, args.final_users, args.future_test_users, args.workers) < 0:
         parser.error("user limits and workers must be nonnegative")
     if args.protocol == "future-window" and args.future_test_users < 1:
@@ -511,7 +563,8 @@ def main():
                             evaluation_targets=selection_targets)
         _, scores = recall(model, data, records, device, args.candidates)
         pools, _ = candidate_pools(data, records, scores, cf, args.candidates,
-                                   args.fusion_mode, args.itemcf_half_life_days)
+                                   args.fusion_mode, args.itemcf_half_life_days,
+                                   args.fusion_weights)
         del model
         gc.collect()
         torch.cuda.empty_cache()
@@ -524,6 +577,7 @@ def main():
                "protocol": args.protocol,
                "selection_metric": f"val V2 HR@{args.candidates}, val pure DIN HR@5",
                "fusion_mode": args.fusion_mode,
+               "fusion_weights": list(args.fusion_weights),
                "itemcf_half_life_days": args.itemcf_half_life_days,
                "validation_only": bool(args.validation_only),
                "checkpoint_source": checkpoint_source,
@@ -537,7 +591,8 @@ def main():
         model.load_state_dict(saved["model"])
         rankings, scores = recall(model, data, records, device, args.candidates)
         pools, cf_rankings = candidate_pools(data, records, scores, cf, args.candidates,
-                                             args.fusion_mode, args.itemcf_half_life_days)
+                                             args.fusion_mode, args.itemcf_half_life_days,
+                                             args.fusion_weights)
         del model, saved
         gc.collect()
         torch.cuda.empty_cache()

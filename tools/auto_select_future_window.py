@@ -14,6 +14,9 @@ import time
 import numpy as np
 
 
+DEFAULT_FUSION_WEIGHTS = [1.5, 1.0, 0.7, 0.05]
+
+
 def read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
@@ -99,6 +102,9 @@ def load_result(run, candidate=False):
     require(spec["args"].get("fusion_mode", "quota") == result.get("fusion_mode") and
             spec["args"].get("itemcf_half_life_days", 0.) == result.get("itemcf_half_life_days"),
             f"{run.name}: fusion recipe mismatch")
+    expected_weights = spec["args"].get("fusion_weights", DEFAULT_FUSION_WEIGHTS)
+    require(result.get("fusion_weights", DEFAULT_FUSION_WEIGHTS) == expected_weights,
+            f"{run.name}: fusion weights mismatch")
     return result, spec
 
 
@@ -271,12 +277,14 @@ def launch_final(args, decision, recipe):
             link_or_copy(baseline / name, final / name)
         runner = [sys.executable, "-B", str(source / "code/run_baseline.py")]
         final_args = dict(recipe, run_dir=str(final), data_dir=str(Path(args.data_dir).resolve()),
-                          eval_only_run=str(baseline), final_users=recipe["future_test_users"])
+                          eval_only_run=str(baseline), final_users=recipe["future_test_users"],
+                          fusion_weights=recipe.get("fusion_weights", DEFAULT_FUSION_WEIGHTS))
         for key in ("data_dir", "run_dir", "protocol", "sample_users", "eval_users", "final_users",
                     "future_test_users", "epochs", "dim", "hist_len", "negatives", "candidates",
                     "cf_neighbors", "fusion_mode", "itemcf_half_life_days", "v2_batch", "din_batch",
                     "workers", "seed", "eval_only_run"):
             runner.extend(["--" + key.replace("_", "-"), str(final_args[key])])
+        runner.extend(["--fusion-weights", *(str(value) for value in final_args["fusion_weights"])])
         command = [sys.executable, "-B", str(source / "tools/monitor_training.py"), "--run-dir", str(final),
                    "--log", str(final / "train.log"), "--poll-seconds", "60", "--", *runner]
         with (final / "auto_launch.log").open("ab", buffering=0) as log:
