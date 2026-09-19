@@ -47,24 +47,27 @@ def build_bundle(run):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", required=True)
-    parser.add_argument("--training-pid", type=int, required=True)
-    parser.add_argument("--wrapper-pid", type=int, required=True)
+    parser.add_argument("--training-pid", type=int)
+    parser.add_argument("--wrapper-pid", type=int)
     parser.add_argument("--archive-grace-seconds", type=int, default=900)
     args = parser.parse_args()
     run = Path(args.run_dir).resolve()
-    training_command = Path(f"/proc/{args.training_pid}/cmdline").read_bytes()
-    wrapper_command = Path(f"/proc/{args.wrapper_pid}/cmdline").read_bytes()
-    if b"run_token_experiments.py" not in training_command or str(run).encode() not in training_command:
-        raise ValueError("Training PID does not belong to this run")
-    if b"auto_shutdown_token_suite.sh" not in wrapper_command:
-        raise ValueError("Unexpected shutdown wrapper PID")
-    os.kill(args.wrapper_pid, signal.SIGSTOP)
-    print("Shutdown wrapper paused; training continues", flush=True)
-    process_stat = Path(f"/proc/{args.training_pid}/stat")
-    while process_stat.exists():
-        if process_stat.read_text().rsplit(")", 1)[1].split()[0] == "Z":
-            break
-        time.sleep(900)
+    if bool(args.training_pid) != bool(args.wrapper_pid):
+        parser.error("Supply both process IDs for an already-running legacy wrapper")
+    if args.training_pid:
+        training_command = Path(f"/proc/{args.training_pid}/cmdline").read_bytes()
+        wrapper_command = Path(f"/proc/{args.wrapper_pid}/cmdline").read_bytes()
+        if b"run_token_experiments.py" not in training_command or str(run).encode() not in training_command:
+            raise ValueError("Training PID does not belong to this run")
+        if b"auto_shutdown_token_suite.sh" not in wrapper_command:
+            raise ValueError("Unexpected shutdown wrapper PID")
+        os.kill(args.wrapper_pid, signal.SIGSTOP)
+        print("Shutdown wrapper paused; training continues", flush=True)
+        process_stat = Path(f"/proc/{args.training_pid}/stat")
+        while process_stat.exists():
+            if process_stat.read_text().rsplit(")", 1)[1].split()[0] == "Z":
+                break
+            time.sleep(900)
     digest = build_bundle(run)
     print("Evidence validated and bundled: " + digest, flush=True)
     deadline = time.monotonic() + args.archive_grace_seconds
@@ -80,7 +83,8 @@ def main():
     }, indent=2))
     print("Releasing shutdown wrapper; local archive acknowledged=" + str(acknowledged), flush=True)
     os.sync()
-    os.kill(args.wrapper_pid, signal.SIGCONT)
+    if args.wrapper_pid:
+        os.kill(args.wrapper_pid, signal.SIGCONT)
 
 
 if __name__ == "__main__":

@@ -24,6 +24,11 @@ mkdir -p "$RUN"
 status=$?
 
 if [ "$status" -eq 0 ] && [ -f "$RUN/COMPLETED.json" ]; then
+  "$PY" -B "$ROOT/tools/finalize_token_archive.py" --run-dir "$RUN"
+  archive_status=$?
+  if [ "$archive_status" -ne 0 ]; then
+    exit "$archive_status"
+  fi
   date -u +%FT%TZ > "$RUN/shutdown_requested_utc.txt"
   /sbin/shutdown -h now
 fi

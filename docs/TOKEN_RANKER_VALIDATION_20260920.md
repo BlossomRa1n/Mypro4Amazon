@@ -92,3 +92,6 @@ token 顺序固定为：`sequence / user / item / context / cross / dense`。DIN
 - 已终止本轮旧的 10 秒和 60 秒本地轮询，统一为 900 秒。服务器训练监控原本已是 900 秒。
 - 归档程序通过合成文件验证：证据 SHA-256 一致、排除 checkpoint、拒绝不匹配完成标记。模型训练未因此重启。
 - 收尾程序首次尝试使用 pidfd 等待进程，在服务器 Python/内核环境不兼容；两次尝试均在发送任何进程信号前退出。最终使用 900 秒进程状态检查，收尾 PID 为 `58211`。
+- 新增 `tools/compare_token_results.py`：在每个 split 内核对数组长度、候选命中掩码和指标均值，计算 concat/baseline、mixer/baseline、mixer/concat 的 HR 配对 bootstrap 及 NDCG 配对正态近似区间。6 用户合成数据的已知 gain/loss、NDCG 区间与 6 类错误拒绝路径均通过。
+- 本地新版启动器已接入“训练完成 → 同步打包/等待归档 → 关机”，供未来启动直接使用；本次正在运行的旧 shell 文件未热修改，由独立收尾进程保护。
+- 归档宽限有 900 秒上限：若客户端离线，服务器保留证据包后仍会关机，避免无限闲置；本轮收尾需实际核对本地归档成功。包内 `monitor_status.json` 是打包时快照，最终关机状态要另行核对。
