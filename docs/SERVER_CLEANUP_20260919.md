@@ -44,3 +44,9 @@ Before deletion, SHA-256 confirmed that each structural experiment's `final.pth`
 `two_tower_v2_latest.pth` was checked separately and did **not** match `two_tower_v2_best_phase2.pth`; both remain. This exception overrides the earlier audit suggestion to remove the latest file.
 
 The rejected Category-weight `0.4` eval-only run temporarily created about 1 GiB of duplicate `data.pkl`, `svd.npy`, and `itemcf.pkl` files. After its result snapshot was copied locally, those three cache files were removed; its 31 MiB results/prediction directory remains. The data disk now has about 5.5 GiB free. Raw data, the future-window baseline, accepted final results, and legacy model directories remain intact.
+
+## 2026-09-20 training-space preparation
+
+Before the next optimization, the three completed `exp_3a1`, `exp_3a2`, and `exp_3a3` directories were copied to `/root/archive_exp_3a_20260919/` and each `din_token_best.pth` copy was verified byte-for-byte with SHA-256. The original data-disk paths now point to the archived directories through symlinks, so historical checkpoints remain addressable while about 3.9 GiB was released from `/root/autodl-tmp`.
+
+The candidate-budget-150 and candidate-budget-75 validation/test temporary directories were removed only after their result JSON, predictions, logs, completion markers, and paired comparison files were copied to the local `server_snapshot`. Final server state: system disk about 12 GiB free, data disk about 7.8 GiB free, and no training/evaluation/monitor process remains.
