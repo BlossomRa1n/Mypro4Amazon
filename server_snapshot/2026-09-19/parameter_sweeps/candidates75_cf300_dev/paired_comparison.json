@@ -1,0 +1,1 @@
+{"baseline":"cf300_candidates100_dev","trial":"cf300_candidates75_dev","users":100000,"baseline_hr5":0.04397,"trial_hr5":0.04669,"baseline_ndcg5":0.019810454523144155,"trial_ndcg5":0.021269117368646197,"gained":623,"lost":351,"paired_hr_delta":0.00272,"bootstrap_hr95":[0.00211,0.00333],"mean_ndcg_delta":0.0014586628455020428,"decision":"development_gate_passed"}

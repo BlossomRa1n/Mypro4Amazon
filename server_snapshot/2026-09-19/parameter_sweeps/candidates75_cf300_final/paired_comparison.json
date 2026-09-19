@@ -1,0 +1,1 @@
+{"baseline":"cf300_candidates100_test","trial":"cf300_candidates75_test","users":100000,"baseline_hr5":0.04193,"trial_hr5":0.04481,"baseline_ndcg5":0.01884552575794579,"trial_ndcg5":0.02038546989336609,"gained":610,"lost":322,"paired_hr_delta":0.00288,"bootstrap_hr95":[0.00228,0.00348],"mean_ndcg_delta":0.001539944135420298,"decision":"accepted_as_current_candidate"}
