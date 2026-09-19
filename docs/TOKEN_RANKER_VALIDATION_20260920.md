@@ -37,6 +37,7 @@ token 顺序固定为：`sequence / user / item / context / cross / dense`。DIN
   - 运行完整套件。
   - 只有写入 `COMPLETED.json` 后才请求关机。
 - 监控：`tools/monitor_training.py --poll-seconds 900`。
+- 本地结果捕获：`tools/watch_token_suite_archive.ps1` 只等待本次运行的完成标记并抓取指标文件，不参与训练控制。
 
 ## Smoke 验证
 
@@ -50,11 +51,12 @@ token 顺序固定为：`sequence / user / item / context / cross / dense`。DIN
 ## 正式运行
 
 - 服务器目录：`/root/autodl-tmp/future_window_token_suite_20260920`
-- 托管监控 PID：`48499`（启动时记录）
-- 训练子进程：`48502`（启动时记录）
+- 托管监控 PID：`48902`
+- 启动器 PID：`48903`
+- 训练子进程：`48905`
 - 监控频率：900 秒
-- 启动时间：2026-09-19 17:55 UTC
-- 当前状态：运行中，尚未生成 `COMPLETED.json`
+- 启动时间：2026-09-19 18:01 UTC
+- 当前状态：`semantic_concat` 已完成 3 epoch，`semantic_rankmixer` 正在训练，尚未生成 `COMPLETED.json`。
 
 第一次正式启动在候选池构建阶段被主动停止：发现 concat 头误用了 LayerNorm/GELU，未进入训练，未产生可用结果；修复后已从空目录重新启动，旧缓存和权重均已删除。
 
@@ -65,3 +67,9 @@ token 顺序固定为：`sequence / user / item / context / cross / dense`。DIN
 - 开发 100,000 用户：候选池 HR@75 `11.723%`，DIN HR@5 `4.669%`，NDCG@5 `2.12691%`。
 - 独立测试 100,000 用户：候选池 HR@75 `11.644%`，DIN HR@5 `4.481%`，NDCG@5 `2.03855%`。
 - 两组结果与 2026-09-19 候选预算 75 快照一致，说明本轮候选池和评估协议未漂移。
+
+### 已完成的 semantic_concat
+
+- 开发集逐 epoch HR@5：epoch 1 `4.080%`，epoch 2 `4.235%`，epoch 3 `4.201%`；按开发集 HR@5 选择 epoch 2。
+- 测试集最终 HR@5 `4.064%`，NDCG@5 `1.84478%`；候选池仍为 HR@75 `11.644%`。
+- 该结果低于同池 baseline，暂不作为替代方案；最终结论需等待 `semantic_rankmixer` 的完整 screen/test paired 结果。
