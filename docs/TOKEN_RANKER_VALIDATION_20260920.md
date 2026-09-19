@@ -27,6 +27,7 @@ token 顺序固定为：`sequence / user / item / context / cross / dense`。DIN
   - 新增 `SemanticTokenDIN`。
   - 新增固定 token 数的 `RankMixerBlock`。
   - 保留原始 `user_emb * item_emb` cross 信号，不对 cross token 做 LayerNorm。
+  - concat 变体的最终头与 `DINExtendedModel` 对齐为 `Linear + BatchNorm + PReLU + Dropout`。
 - `code/run_token_experiments.py`
   - 新增未来窗口 token 实验入口。
   - 同一候选池上重测现有 DIN baseline。
@@ -54,5 +55,7 @@ token 顺序固定为：`sequence / user / item / context / cross / dense`。DIN
 - 监控频率：900 秒
 - 启动时间：2026-09-19 17:55 UTC
 - 当前状态：运行中，尚未生成 `COMPLETED.json`
+
+第一次正式启动在候选池构建阶段被主动停止：发现 concat 头误用了 LayerNorm/GELU，未进入训练，未产生可用结果；修复后已从空目录重新启动，旧缓存和权重均已删除。
 
 正式结果完成后追加：各变体 screen/test 指标、相对固定 baseline 的 paired HR@5 区间、NDCG 差值、最终保留方案和关机时间。
