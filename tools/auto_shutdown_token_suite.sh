@@ -5,6 +5,7 @@ ROOT=/root/MyPro-Amazon
 PY=/root/miniconda3/bin/python
 RUN=/root/autodl-tmp/future_window_token_suite_20260920
 LOG=$RUN/suite.log
+SHUTDOWN_BIN=$(command -v shutdown) || exit 127
 
 mkdir -p "$RUN"
 "$PY" -B "$ROOT/code/run_token_experiments.py" \
@@ -30,6 +31,6 @@ if [ "$status" -eq 0 ] && [ -f "$RUN/COMPLETED.json" ]; then
     exit "$archive_status"
   fi
   date -u +%FT%TZ > "$RUN/shutdown_requested_utc.txt"
-  /sbin/shutdown -h now
+  "$SHUTDOWN_BIN" -h now
 fi
 exit "$status"

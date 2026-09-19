@@ -1,0 +1,368 @@
+{
+  "manifest": {
+    "source": {
+      "base_run": "/root/autodl-tmp/future_window_baseline_20260919",
+      "base_manifest": "4bd993e344d4389b4eaf8c92e9ad2674fa25e4c55c3df959bf0a624cd2a66dfa",
+      "base_v2": "58301a1ce43a1db609c5cd9a22e7b35f5c01849faf32c3a9ff2d8347f8d311c5",
+      "svd": "51565a6c1788348162aecea6451ad41779bb496c9f484ca450efd2af716b9d4b",
+      "itemcf": "8fa65999a9574ccc1dd1d0cd5cff97ca21d16db407bdc83e4629c2cd73f240bf",
+      "data_id": "754d426bc41ff19907bd31b3f139e3150d09cc13a746924fecc42e562a92b158"
+    },
+    "data_id": "754d426bc41ff19907bd31b3f139e3150d09cc13a746924fecc42e562a92b158",
+    "protocol": "future-window",
+    "candidate_budget": 75,
+    "fusion_mode": "rrf",
+    "fusion_weights": [
+      2.0,
+      1.0,
+      0.7,
+      0.05
+    ],
+    "itemcf_half_life_days": 180.0,
+    "token_dim": 256,
+    "epochs": 3,
+    "variants": [
+      "semantic_concat",
+      "semantic_rankmixer"
+    ],
+    "screen_users": 100000,
+    "test_users": 100000,
+    "seed": 42
+  },
+  "baseline": {
+    "screen": {
+      "candidate_pool": {
+        "hr": 0.11723,
+        "ndcg": 0.03267798179386948,
+        "recall": 0.07232844228942473,
+        "users": 100000,
+        "k": 75
+      },
+      "din": {
+        "hr": 0.04669,
+        "ndcg": 0.021269117368646194,
+        "recall": 0.027563356324033204,
+        "users": 100000,
+        "k": 5
+      },
+      "pool_size_mean": 75.0,
+      "label": "baseline_screen",
+      "users": 100000,
+      "din_conditional_hr5": 0.39827689158065344
+    },
+    "test": {
+      "candidate_pool": {
+        "hr": 0.11644,
+        "ndcg": 0.03191415077255718,
+        "recall": 0.07182503355107923,
+        "users": 100000,
+        "k": 75
+      },
+      "din": {
+        "hr": 0.04481,
+        "ndcg": 0.02038546989336609,
+        "recall": 0.02628902416078694,
+        "users": 100000,
+        "k": 5
+      },
+      "pool_size_mean": 75.0,
+      "label": "baseline_test",
+      "users": 100000,
+      "din_conditional_hr5": 0.384833390587427
+    }
+  },
+  "variants": {
+    "concat": {
+      "history": [
+        {
+          "epoch": 1,
+          "loss": 0.03207565576977061,
+          "steps": 18483,
+          "seconds": 1341.7247207190376,
+          "metrics": {
+            "candidate_pool": {
+              "hr": 0.11723,
+              "ndcg": 0.03267798179386948,
+              "recall": 0.07232844228942473,
+              "users": 100000,
+              "k": 75
+            },
+            "din": {
+              "hr": 0.0408,
+              "ndcg": 0.018559310257664417,
+              "recall": 0.023972334176590948,
+              "users": 100000,
+              "k": 5
+            },
+            "pool_size_mean": 75.0,
+            "label": "semantic_concat_epoch1",
+            "users": 100000,
+            "din_conditional_hr5": 0.34803377974921096
+          }
+        },
+        {
+          "epoch": 2,
+          "loss": 0.013899132072791183,
+          "steps": 18483,
+          "seconds": 1356.9706127359532,
+          "metrics": {
+            "candidate_pool": {
+              "hr": 0.11723,
+              "ndcg": 0.03267798179386948,
+              "recall": 0.07232844228942473,
+              "users": 100000,
+              "k": 75
+            },
+            "din": {
+              "hr": 0.04235,
+              "ndcg": 0.019364628154522966,
+              "recall": 0.02513939351031454,
+              "users": 100000,
+              "k": 5
+            },
+            "pool_size_mean": 75.0,
+            "label": "semantic_concat_epoch2",
+            "users": 100000,
+            "din_conditional_hr5": 0.36125565128380105
+          }
+        },
+        {
+          "epoch": 3,
+          "loss": 0.006155808658907599,
+          "steps": 18483,
+          "seconds": 1361.1893364498392,
+          "metrics": {
+            "candidate_pool": {
+              "hr": 0.11723,
+              "ndcg": 0.03267798179386948,
+              "recall": 0.07232844228942473,
+              "users": 100000,
+              "k": 75
+            },
+            "din": {
+              "hr": 0.04201,
+              "ndcg": 0.01928432734165847,
+              "recall": 0.02486471543184877,
+              "users": 100000,
+              "k": 5
+            },
+            "pool_size_mean": 75.0,
+            "label": "semantic_concat_epoch3",
+            "users": 100000,
+            "din_conditional_hr5": 0.35835536978589094
+          }
+        }
+      ],
+      "screen": {
+        "candidate_pool": {
+          "hr": 0.11723,
+          "ndcg": 0.03267798179386948,
+          "recall": 0.07232844228942473,
+          "users": 100000,
+          "k": 75
+        },
+        "din": {
+          "hr": 0.04235,
+          "ndcg": 0.019364628154522966,
+          "recall": 0.02513939351031454,
+          "users": 100000,
+          "k": 5
+        },
+        "pool_size_mean": 75.0,
+        "label": "concat_screen_final",
+        "users": 100000,
+        "din_conditional_hr5": 0.36125565128380105
+      },
+      "test": {
+        "candidate_pool": {
+          "hr": 0.11644,
+          "ndcg": 0.03191415077255718,
+          "recall": 0.07182503355107923,
+          "users": 100000,
+          "k": 75
+        },
+        "din": {
+          "hr": 0.04064,
+          "ndcg": 0.018447828851685454,
+          "recall": 0.0239561903320315,
+          "users": 100000,
+          "k": 5
+        },
+        "pool_size_mean": 75.0,
+        "label": "concat_test_final",
+        "users": 100000,
+        "din_conditional_hr5": 0.3490209549982824
+      },
+      "screen_vs_baseline": {
+        "hr5_delta": -0.00434,
+        "hr5_delta_ci95": [
+          -0.00547,
+          -0.00322
+        ],
+        "ndcg5_delta": -0.0019044894725084305,
+        "gained": 1409,
+        "lost": 1843,
+        "users": 100000,
+        "confirmed_gain": false
+      },
+      "test_vs_baseline": {
+        "hr5_delta": -0.00417,
+        "hr5_delta_ci95": [
+          -0.0053,
+          -0.00306
+        ],
+        "ndcg5_delta": -0.001937640830874443,
+        "gained": 1401,
+        "lost": 1818,
+        "users": 100000,
+        "confirmed_gain": false
+      }
+    },
+    "rankmixer": {
+      "history": [
+        {
+          "epoch": 1,
+          "loss": 0.028280136522677808,
+          "steps": 18483,
+          "seconds": 1418.2239989028312,
+          "metrics": {
+            "candidate_pool": {
+              "hr": 0.11723,
+              "ndcg": 0.03267798179386948,
+              "recall": 0.07232844228942473,
+              "users": 100000,
+              "k": 75
+            },
+            "din": {
+              "hr": 0.04073,
+              "ndcg": 0.018229933938847982,
+              "recall": 0.02362556164463168,
+              "users": 100000,
+              "k": 5
+            },
+            "pool_size_mean": 75.0,
+            "label": "semantic_rankmixer_epoch1",
+            "users": 100000,
+            "din_conditional_hr5": 0.34743666297022946
+          }
+        },
+        {
+          "epoch": 2,
+          "loss": 0.014034946533589157,
+          "steps": 18483,
+          "seconds": 1405.2266505961306,
+          "metrics": {
+            "candidate_pool": {
+              "hr": 0.11723,
+              "ndcg": 0.03267798179386948,
+              "recall": 0.07232844228942473,
+              "users": 100000,
+              "k": 75
+            },
+            "din": {
+              "hr": 0.04179,
+              "ndcg": 0.019067104302250042,
+              "recall": 0.02466016493040464,
+              "users": 100000,
+              "k": 5
+            },
+            "pool_size_mean": 75.0,
+            "label": "semantic_rankmixer_epoch2",
+            "users": 100000,
+            "din_conditional_hr5": 0.35647871705194917
+          }
+        },
+        {
+          "epoch": 3,
+          "loss": 0.006303863542979964,
+          "steps": 18483,
+          "seconds": 1417.672525752103,
+          "metrics": {
+            "candidate_pool": {
+              "hr": 0.11723,
+              "ndcg": 0.03267798179386948,
+              "recall": 0.07232844228942473,
+              "users": 100000,
+              "k": 75
+            },
+            "din": {
+              "hr": 0.04185,
+              "ndcg": 0.0186611735892559,
+              "recall": 0.024320366241602824,
+              "users": 100000,
+              "k": 5
+            },
+            "pool_size_mean": 75.0,
+            "label": "semantic_rankmixer_epoch3",
+            "users": 100000,
+            "din_conditional_hr5": 0.3569905314339333
+          }
+        }
+      ],
+      "screen": {
+        "candidate_pool": {
+          "hr": 0.11723,
+          "ndcg": 0.03267798179386948,
+          "recall": 0.07232844228942473,
+          "users": 100000,
+          "k": 75
+        },
+        "din": {
+          "hr": 0.04185,
+          "ndcg": 0.0186611735892559,
+          "recall": 0.024320366241602824,
+          "users": 100000,
+          "k": 5
+        },
+        "pool_size_mean": 75.0,
+        "label": "rankmixer_screen_final",
+        "users": 100000,
+        "din_conditional_hr5": 0.3569905314339333
+      },
+      "test": {
+        "candidate_pool": {
+          "hr": 0.11644,
+          "ndcg": 0.03191415077255718,
+          "recall": 0.07182503355107923,
+          "users": 100000,
+          "k": 75
+        },
+        "din": {
+          "hr": 0.04043,
+          "ndcg": 0.018029889524668278,
+          "recall": 0.023424682298395096,
+          "users": 100000,
+          "k": 5
+        },
+        "pool_size_mean": 75.0,
+        "label": "rankmixer_test_final",
+        "users": 100000,
+        "din_conditional_hr5": 0.3472174510477499
+      },
+      "screen_vs_baseline": {
+        "hr5_delta": -0.00484,
+        "hr5_delta_ci95": [
+          -0.006,
+          -0.00369
+        ],
+        "ndcg5_delta": -0.0026079434901475906,
+        "gained": 1456,
+        "lost": 1940,
+        "users": 100000,
+        "confirmed_gain": false
+      },
+      "test_vs_baseline": {
+        "hr5_delta": -0.00438,
+        "hr5_delta_ci95": [
+          -0.005520249999999999,
+          -0.00326
+        ],
+        "ndcg5_delta": -0.002355579286813736,
+        "gained": 1424,
+        "lost": 1862,
+        "users": 100000,
+        "confirmed_gain": false
+      }
+    }
+  }
+}

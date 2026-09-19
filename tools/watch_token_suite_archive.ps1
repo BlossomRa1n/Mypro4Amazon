@@ -4,7 +4,8 @@ param(
     [string]$RemoteRun = "/root/autodl-tmp/future_window_token_suite_20260920",
     [string]$LocalRun = "D:\MyPro-Amazon\server_snapshot\2026-09-20\token_suite_final_20260920",
     [int]$PollSeconds = 900,
-    [switch]$Once
+    [switch]$Once,
+    [switch]$DeferAcknowledgement
 )
 $ErrorActionPreference = 'Stop'
 $remote = "root@$HostName"
@@ -34,6 +35,10 @@ do {
             $completed = Get-Content (Join-Path $LocalRun 'COMPLETED.json') -Raw | ConvertFrom-Json
             if ($completed.status -ne 'complete') { throw 'Suite is not complete' }
             Set-Content -Encoding utf8 (Join-Path $LocalRun 'ARCHIVED_AT.txt') (Get-Date -Format o)
+            if ($DeferAcknowledgement) {
+                Write-Output 'Evidence downloaded and checked; acknowledgement deferred for result review.'
+                exit 0
+            }
             & scp @scpArgs (Join-Path $LocalRun 'evidence.sha256') "$remote`:$RemoteRun/ARCHIVE_ACK.sha256"
             if ($LASTEXITCODE -ne 0) { throw 'Archive acknowledgement failed' }
             Write-Output 'Evidence downloaded, checked, and acknowledged; shutdown may proceed.'

@@ -1,0 +1,202 @@
+{
+  "run_dir": "D:\\MyPro-Amazon\\server_snapshot\\2026-09-20\\token_suite_final_20260920",
+  "difference_direction": "candidate minus reference",
+  "metric_units": "fraction, not percentage points",
+  "bootstrap_samples": 10000,
+  "bootstrap_seed": 42,
+  "numpy_version": "2.4.6",
+  "validation": {
+    "metric_mean_absolute_tolerance": 1e-07,
+    "checks": [
+      "array lengths",
+      "array values",
+      "metric means and user counts",
+      "identical per-user pool_hit within each split"
+    ]
+  },
+  "limitations": [
+    "Single training seed: intervals condition on fixed models and omit training-seed variability.",
+    "No multiple-comparison correction is applied.",
+    "Screen users selected the best epoch; screen is not independent validation.",
+    "Test is held out from epoch selection in this suite; this does not establish it was never used previously.",
+    "Intervals assume independent users and aligned row order. Archives contain no user IDs, so equal pool_hit arrays and matching means cannot prove user identity or identical candidate membership."
+  ],
+  "splits": {
+    "screen": {
+      "role": "epoch_selection_not_independent_validation",
+      "models": {
+        "baseline": {
+          "users": 100000,
+          "hr5": 0.04669,
+          "ndcg5": 0.021269117385745048,
+          "pool_hr": 0.11723,
+          "arrays_file": "baseline_screen_users.npz",
+          "metrics_file": "baseline_screen_metrics.json"
+        },
+        "concat": {
+          "users": 100000,
+          "hr5": 0.04235,
+          "ndcg5": 0.01936462817594409,
+          "pool_hr": 0.11723,
+          "arrays_file": "concat_screen_final_users.npz",
+          "metrics_file": "concat_screen_final_metrics.json"
+        },
+        "rankmixer": {
+          "users": 100000,
+          "hr5": 0.04185,
+          "ndcg5": 0.018661173605322837,
+          "pool_hr": 0.11723,
+          "arrays_file": "rankmixer_screen_final_users.npz",
+          "metrics_file": "rankmixer_screen_final_metrics.json"
+        }
+      },
+      "comparisons": {
+        "concat_vs_baseline": {
+          "users": 100000,
+          "gained": 1409,
+          "lost": 1843,
+          "unchanged": 96748,
+          "hr5_delta": -0.00434,
+          "hr5_delta_ci95": [
+            -0.00547,
+            -0.00322
+          ],
+          "hr5_ci_method": "paired multinomial bootstrap percentile (10000 draws, seed 42)",
+          "ndcg5_delta": -0.0019044892098009586,
+          "ndcg5_delta_ci95": [
+            -0.0024733397184157095,
+            -0.0013356387011862077
+          ],
+          "ndcg5_delta_standard_error": 0.0002902351844736798,
+          "ndcg5_ci_method": "paired normal approximation; mean +/- 1.959964 * sample_sd / sqrt(n)"
+        },
+        "rankmixer_vs_baseline": {
+          "users": 100000,
+          "gained": 1456,
+          "lost": 1940,
+          "unchanged": 96604,
+          "hr5_delta": -0.00484,
+          "hr5_delta_ci95": [
+            -0.006,
+            -0.00369
+          ],
+          "hr5_ci_method": "paired multinomial bootstrap percentile (10000 draws, seed 42)",
+          "ndcg5_delta": -0.0026079437804222105,
+          "ndcg5_delta_ci95": [
+            -0.0031884867138225604,
+            -0.0020274008470218606
+          ],
+          "ndcg5_delta_standard_error": 0.00029620081694337183,
+          "ndcg5_ci_method": "paired normal approximation; mean +/- 1.959964 * sample_sd / sqrt(n)"
+        },
+        "rankmixer_vs_concat": {
+          "users": 100000,
+          "gained": 1362,
+          "lost": 1412,
+          "unchanged": 97226,
+          "hr5_delta": -0.0005,
+          "hr5_delta_ci95": [
+            -0.0015502499999999998,
+            0.00054
+          ],
+          "hr5_ci_method": "paired multinomial bootstrap percentile (10000 draws, seed 42)",
+          "ndcg5_delta": -0.000703454570621252,
+          "ndcg5_delta_ci95": [
+            -0.0012109132287217242,
+            -0.00019599591252077988
+          ],
+          "ndcg5_delta_standard_error": 0.000258912236195788,
+          "ndcg5_ci_method": "paired normal approximation; mean +/- 1.959964 * sample_sd / sqrt(n)"
+        }
+      }
+    },
+    "test": {
+      "role": "held_out_from_epoch_selection_in_this_suite",
+      "models": {
+        "baseline": {
+          "users": 100000,
+          "hr5": 0.04481,
+          "ndcg5": 0.020385469918996094,
+          "pool_hr": 0.11644,
+          "arrays_file": "baseline_test_users.npz",
+          "metrics_file": "baseline_test_metrics.json"
+        },
+        "concat": {
+          "users": 100000,
+          "hr5": 0.04064,
+          "ndcg5": 0.01844782887637615,
+          "pool_hr": 0.11644,
+          "arrays_file": "concat_test_final_users.npz",
+          "metrics_file": "concat_test_final_metrics.json"
+        },
+        "rankmixer": {
+          "users": 100000,
+          "hr5": 0.04043,
+          "ndcg5": 0.018029889544844628,
+          "pool_hr": 0.11644,
+          "arrays_file": "rankmixer_test_final_users.npz",
+          "metrics_file": "rankmixer_test_final_metrics.json"
+        }
+      },
+      "comparisons": {
+        "concat_vs_baseline": {
+          "users": 100000,
+          "gained": 1401,
+          "lost": 1818,
+          "unchanged": 96781,
+          "hr5_delta": -0.00417,
+          "hr5_delta_ci95": [
+            -0.0053,
+            -0.00306
+          ],
+          "hr5_ci_method": "paired multinomial bootstrap percentile (10000 draws, seed 42)",
+          "ndcg5_delta": -0.0019376410426199435,
+          "ndcg5_delta_ci95": [
+            -0.0025011486134669425,
+            -0.0013741334717729445
+          ],
+          "ndcg5_delta_standard_error": 0.0002875091457250617,
+          "ndcg5_ci_method": "paired normal approximation; mean +/- 1.959964 * sample_sd / sqrt(n)"
+        },
+        "rankmixer_vs_baseline": {
+          "users": 100000,
+          "gained": 1424,
+          "lost": 1862,
+          "unchanged": 96714,
+          "hr5_delta": -0.00438,
+          "hr5_delta_ci95": [
+            -0.00553,
+            -0.00326
+          ],
+          "hr5_ci_method": "paired multinomial bootstrap percentile (10000 draws, seed 42)",
+          "ndcg5_delta": -0.0023555803741514684,
+          "ndcg5_delta_ci95": [
+            -0.0029221719269019435,
+            -0.0017889888214009933
+          ],
+          "ndcg5_delta_standard_error": 0.0002890826347931275,
+          "ndcg5_ci_method": "paired normal approximation; mean +/- 1.959964 * sample_sd / sqrt(n)"
+        },
+        "rankmixer_vs_concat": {
+          "users": 100000,
+          "gained": 1385,
+          "lost": 1406,
+          "unchanged": 97209,
+          "hr5_delta": -0.00021,
+          "hr5_delta_ci95": [
+            -0.00124,
+            0.00084
+          ],
+          "hr5_ci_method": "paired multinomial bootstrap percentile (10000 draws, seed 42)",
+          "ndcg5_delta": -0.00041793933153152466,
+          "ndcg5_delta_ci95": [
+            -0.0009267906474176704,
+            9.091198435462109e-05
+          ],
+          "ndcg5_delta_standard_error": 0.0002596227889389296,
+          "ndcg5_ci_method": "paired normal approximation; mean +/- 1.959964 * sample_sd / sqrt(n)"
+        }
+      }
+    }
+  }
+}

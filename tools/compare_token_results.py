@@ -119,6 +119,7 @@ def compare_run(run_dir):
         "run_dir": str(run_dir), "difference_direction": "candidate minus reference",
         "metric_units": "fraction, not percentage points",
         "bootstrap_samples": BOOTSTRAP_SAMPLES, "bootstrap_seed": SEED,
+        "numpy_version": np.__version__,
         "validation": {"metric_mean_absolute_tolerance": MEAN_ATOL,
                        "checks": ["array lengths", "array values", "metric means and user counts",
                                   "identical per-user pool_hit within each split"]},
