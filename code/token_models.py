@@ -99,10 +99,13 @@ class SemanticTokenDIN(nn.Module):
         else:
             self.mixer = None
 
+        # Keep the fusion head identical to DINExtendedModel.  This makes the
+        # concat variant an input-tokenization comparison rather than a hidden
+        # activation/normalization comparison.
         layers = []
         prev = self.TOKEN_COUNT * token_dim
         for width in hidden_dims:
-            layers.extend([nn.Linear(prev, width), nn.LayerNorm(width), nn.GELU(), nn.Dropout(dropout)])
+            layers.extend([nn.Linear(prev, width), nn.BatchNorm1d(width), nn.PReLU(), nn.Dropout(dropout)])
             prev = width
         layers.append(nn.Linear(prev, 1))
         self.head = nn.Sequential(*layers)
@@ -210,4 +213,3 @@ class SemanticTokenDIN(nn.Module):
         if neg_score.dim() > pos_score.dim():
             pos_score = pos_score.unsqueeze(-1)
         return F.softplus(neg_score - pos_score).mean()
-
