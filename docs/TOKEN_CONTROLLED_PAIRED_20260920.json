@@ -1,0 +1,339 @@
+{
+  "status": "validated",
+  "run_dir": "/root/autodl-tmp/future_window_token_control_v2_20260920",
+  "data_id": "754d426bc41ff19907bd31b3f139e3150d09cc13a746924fecc42e562a92b158",
+  "suite": "controlled_din_token_v2",
+  "expected_users": 100000,
+  "difference_direction": "candidate minus reference",
+  "metric_units": "fractions, not percentage points",
+  "bootstrap_samples": 10000,
+  "bootstrap_seed": 42,
+  "numpy_version": "2.5.2",
+  "validation": {
+    "protocol": "passed",
+    "monitor_exit": "complete/0",
+    "all_four_groups": "complete",
+    "epochs": 3,
+    "steps_per_epoch": 18483,
+    "selection_rule": "earliest epoch attaining maximum development HR@5",
+    "selected_epochs": {
+      "din_random": {
+        "epoch": 1,
+        "hr5": 0.04625
+      },
+      "din_svd": {
+        "epoch": 3,
+        "hr5": 0.04216
+      },
+      "semantic_concat_random": {
+        "epoch": 1,
+        "hr5": 0.04688
+      },
+      "semantic_concat_svd": {
+        "epoch": 3,
+        "hr5": 0.04161
+      }
+    },
+    "initialization": {
+      "canonical_common_tensors": [
+        "attention_layer.mlp.0.bias",
+        "attention_layer.mlp.0.weight",
+        "attention_layer.mlp.1.weight",
+        "attention_layer.mlp.2.bias",
+        "attention_layer.mlp.2.weight",
+        "attention_layer.mlp.3.weight",
+        "attention_layer.mlp.4.bias",
+        "attention_layer.mlp.4.weight",
+        "brand_embedding.weight",
+        "category_embedding.weight",
+        "fusion.0.bias",
+        "fusion.1.bias",
+        "fusion.1.num_batches_tracked",
+        "fusion.1.running_mean",
+        "fusion.1.running_var",
+        "fusion.1.weight",
+        "fusion.10.weight",
+        "fusion.12.bias",
+        "fusion.12.weight",
+        "fusion.2.weight",
+        "fusion.4.bias",
+        "fusion.4.weight",
+        "fusion.5.bias",
+        "fusion.5.num_batches_tracked",
+        "fusion.5.running_mean",
+        "fusion.5.running_var",
+        "fusion.5.weight",
+        "fusion.6.weight",
+        "fusion.8.bias",
+        "fusion.8.weight",
+        "fusion.9.bias",
+        "fusion.9.num_batches_tracked",
+        "fusion.9.running_mean",
+        "fusion.9.running_var",
+        "fusion.9.weight",
+        "item_embedding.weight"
+      ],
+      "first_layer_bias_explicitly_shared": true,
+      "cpu_rng_sha256": "5feb54a46230d321d888e9b43cf5a57492665f199e4377408d79ee460e36679c",
+      "cuda_rng_sha256": [
+        "aefdce03def94ffed42159e55677ec20e91200e1981f25b1f271b6fd99c3c263"
+      ],
+      "parameter_counts": {
+        "din_random": 315021839,
+        "din_svd": 315021839,
+        "semantic_concat_random": 315169991,
+        "semantic_concat_svd": 315169991
+      },
+      "audit_file_sha256": {
+        "din_random": "b8acad494eddc06d6eff33bf7651d1b7a5128a7bac4722a8ef21720da3ca6e24",
+        "din_svd": "8525befdcea4558074fb44537aa669ce50bb0f4862ed7399935b2c6ea391df2f",
+        "semantic_concat_random": "b08cedfd69279e43ba1f2371ef99b82b924ec94f73be8c5411fe10dc58b5a69a",
+        "semantic_concat_svd": "37ec3757d5246066c8b058b309afe89c6ee70e38c8903b719914640af9f4b717"
+      }
+    },
+    "metric_mean_absolute_tolerance": 1e-07,
+    "suite_manifest_sha256": "9f0f52027099e457f9be65c55513c5a3c28400e7f90a5335f35e333acb207e4a"
+  },
+  "limitations": [
+    "Single training seed: intervals condition on fixed models and omit training-seed variability.",
+    "No multiple-comparison correction; user-level intervals assume independent users.",
+    "Development users selected the best epoch, so screen intervals are descriptive, not independent validation.",
+    "Test is held out from epoch selection in this suite; prior historical reuse is not ruled out.",
+    "Identity and pool_hit arrays are verified. Without candidate IDs, identical candidate membership cannot be independently proven from these metric archives.",
+    "Initial RNG states agree; architecture-specific dropout calls do not produce identical masks across structures."
+  ],
+  "splits": {
+    "screen": {
+      "role": "epoch_selection",
+      "row_identity_verified": true,
+      "models": {
+        "din_random": {
+          "users": 100000,
+          "hr5": 0.04625,
+          "ndcg5": 0.021474719312787056,
+          "pool_hr": 0.11723,
+          "arrays_file": "din_random_screen_final_users.npz",
+          "metrics_file": "din_random_screen_final_metrics.json"
+        },
+        "din_svd": {
+          "users": 100000,
+          "hr5": 0.04216,
+          "ndcg5": 0.019229128182083367,
+          "pool_hr": 0.11723,
+          "arrays_file": "din_svd_screen_final_users.npz",
+          "metrics_file": "din_svd_screen_final_metrics.json"
+        },
+        "semantic_concat_random": {
+          "users": 100000,
+          "hr5": 0.04688,
+          "ndcg5": 0.02157337808743119,
+          "pool_hr": 0.11723,
+          "arrays_file": "semantic_concat_random_screen_final_users.npz",
+          "metrics_file": "semantic_concat_random_screen_final_metrics.json"
+        },
+        "semantic_concat_svd": {
+          "users": 100000,
+          "hr5": 0.04161,
+          "ndcg5": 0.018884476808160543,
+          "pool_hr": 0.11723,
+          "arrays_file": "semantic_concat_svd_screen_final_users.npz",
+          "metrics_file": "semantic_concat_svd_screen_final_metrics.json"
+        }
+      },
+      "comparisons": {
+        "semantic_concat_random_vs_din_random": {
+          "users": 100000,
+          "gained": 1235,
+          "lost": 1172,
+          "unchanged": 97593,
+          "hr5_delta": 0.00063,
+          "hr5_delta_ci95": [
+            -0.00036,
+            0.0016
+          ],
+          "hr5_ci_method": "paired multinomial bootstrap percentile (10000 draws, seed 42)",
+          "ndcg5_delta": 9.865877464413642e-05,
+          "ndcg5_delta_ci95": [
+            -0.0003685897062404207,
+            0.0005659072555286935
+          ],
+          "ndcg5_delta_standard_error": 0.00023839646267490304,
+          "ndcg5_ci_method": "paired normal approximation; mean +/- 1.959964 * sample_sd / sqrt(n)"
+        },
+        "semantic_concat_svd_vs_din_svd": {
+          "users": 100000,
+          "gained": 1316,
+          "lost": 1371,
+          "unchanged": 97313,
+          "hr5_delta": -0.00055,
+          "hr5_delta_ci95": [
+            -0.00157,
+            0.00048
+          ],
+          "hr5_ci_method": "paired multinomial bootstrap percentile (10000 draws, seed 42)",
+          "ndcg5_delta": -0.00034465137392282485,
+          "ndcg5_delta_ci95": [
+            -0.00083212625574497,
+            0.00014282350789932035
+          ],
+          "ndcg5_delta_standard_error": 0.0002487162446184139,
+          "ndcg5_ci_method": "paired normal approximation; mean +/- 1.959964 * sample_sd / sqrt(n)"
+        },
+        "din_svd_vs_din_random": {
+          "users": 100000,
+          "gained": 1339,
+          "lost": 1748,
+          "unchanged": 96913,
+          "hr5_delta": -0.00409,
+          "hr5_delta_ci95": [
+            -0.0052,
+            -0.00299
+          ],
+          "hr5_ci_method": "paired multinomial bootstrap percentile (10000 draws, seed 42)",
+          "ndcg5_delta": -0.002245591130703688,
+          "ndcg5_delta_ci95": [
+            -0.0027996065675928773,
+            -0.0016915756938144983
+          ],
+          "ndcg5_delta_standard_error": 0.0002826661312448558,
+          "ndcg5_ci_method": "paired normal approximation; mean +/- 1.959964 * sample_sd / sqrt(n)"
+        },
+        "semantic_concat_svd_vs_semantic_concat_random": {
+          "users": 100000,
+          "gained": 1257,
+          "lost": 1784,
+          "unchanged": 96959,
+          "hr5_delta": -0.00527,
+          "hr5_delta_ci95": [
+            -0.00636025,
+            -0.004189750000000003
+          ],
+          "hr5_ci_method": "paired multinomial bootstrap percentile (10000 draws, seed 42)",
+          "ndcg5_delta": -0.0026889012792706488,
+          "ndcg5_delta_ci95": [
+            -0.0032369168109742646,
+            -0.002140885747567033
+          ],
+          "ndcg5_delta_standard_error": 0.0002796048988789041,
+          "ndcg5_ci_method": "paired normal approximation; mean +/- 1.959964 * sample_sd / sqrt(n)"
+        }
+      }
+    },
+    "test": {
+      "role": "held_out_from_epoch_selection_in_this_suite",
+      "row_identity_verified": true,
+      "models": {
+        "din_random": {
+          "users": 100000,
+          "hr5": 0.04469,
+          "ndcg5": 0.020533414327949286,
+          "pool_hr": 0.11644,
+          "arrays_file": "din_random_test_final_users.npz",
+          "metrics_file": "din_random_test_final_metrics.json"
+        },
+        "din_svd": {
+          "users": 100000,
+          "hr5": 0.04061,
+          "ndcg5": 0.01829896218881011,
+          "pool_hr": 0.11644,
+          "arrays_file": "din_svd_test_final_users.npz",
+          "metrics_file": "din_svd_test_final_metrics.json"
+        },
+        "semantic_concat_random": {
+          "users": 100000,
+          "hr5": 0.04585,
+          "ndcg5": 0.02111685979425907,
+          "pool_hr": 0.11644,
+          "arrays_file": "semantic_concat_random_test_final_users.npz",
+          "metrics_file": "semantic_concat_random_test_final_metrics.json"
+        },
+        "semantic_concat_svd": {
+          "users": 100000,
+          "hr5": 0.04075,
+          "ndcg5": 0.01831304399818182,
+          "pool_hr": 0.11644,
+          "arrays_file": "semantic_concat_svd_test_final_users.npz",
+          "metrics_file": "semantic_concat_svd_test_final_metrics.json"
+        }
+      },
+      "comparisons": {
+        "semantic_concat_random_vs_din_random": {
+          "users": 100000,
+          "gained": 1271,
+          "lost": 1155,
+          "unchanged": 97574,
+          "hr5_delta": 0.00116,
+          "hr5_delta_ci95": [
+            0.00017,
+            0.00212
+          ],
+          "hr5_ci_method": "paired multinomial bootstrap percentile (10000 draws, seed 42)",
+          "ndcg5_delta": 0.0005834454663097859,
+          "ndcg5_delta_ci95": [
+            0.00012111539332080044,
+            0.0010457755392987713
+          ],
+          "ndcg5_delta_standard_error": 0.00023588702477993787,
+          "ndcg5_ci_method": "paired normal approximation; mean +/- 1.959964 * sample_sd / sqrt(n)"
+        },
+        "semantic_concat_svd_vs_din_svd": {
+          "users": 100000,
+          "gained": 1371,
+          "lost": 1357,
+          "unchanged": 97272,
+          "hr5_delta": 0.00014,
+          "hr5_delta_ci95": [
+            -0.0009,
+            0.00118
+          ],
+          "hr5_ci_method": "paired multinomial bootstrap percentile (10000 draws, seed 42)",
+          "ndcg5_delta": 1.4081809371709824e-05,
+          "ndcg5_delta_ci95": [
+            -0.0004776535710904235,
+            0.0005058171898338432
+          ],
+          "ndcg5_delta_standard_error": 0.00025089000835774503,
+          "ndcg5_ci_method": "paired normal approximation; mean +/- 1.959964 * sample_sd / sqrt(n)"
+        },
+        "din_svd_vs_din_random": {
+          "users": 100000,
+          "gained": 1362,
+          "lost": 1770,
+          "unchanged": 96868,
+          "hr5_delta": -0.00408,
+          "hr5_delta_ci95": [
+            -0.0052,
+            -0.00298
+          ],
+          "hr5_ci_method": "paired multinomial bootstrap percentile (10000 draws, seed 42)",
+          "ndcg5_delta": -0.0022344521391391755,
+          "ndcg5_delta_ci95": [
+            -0.002781649951287675,
+            -0.0016872543269906756
+          ],
+          "ndcg5_delta_standard_error": 0.00027918768735789355,
+          "ndcg5_ci_method": "paired normal approximation; mean +/- 1.959964 * sample_sd / sqrt(n)"
+        },
+        "semantic_concat_svd_vs_semantic_concat_random": {
+          "users": 100000,
+          "gained": 1282,
+          "lost": 1792,
+          "unchanged": 96926,
+          "hr5_delta": -0.0051,
+          "hr5_delta_ci95": [
+            -0.00619,
+            -0.00401
+          ],
+          "hr5_ci_method": "paired multinomial bootstrap percentile (10000 draws, seed 42)",
+          "ndcg5_delta": -0.0028038157960772513,
+          "ndcg5_delta_ci95": [
+            -0.003352178306645303,
+            -0.0022554532855091998
+          ],
+          "ndcg5_delta_standard_error": 0.00027978193216480774,
+          "ndcg5_ci_method": "paired normal approximation; mean +/- 1.959964 * sample_sd / sqrt(n)"
+        }
+      }
+    }
+  }
+}

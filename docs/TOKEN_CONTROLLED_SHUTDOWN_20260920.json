@@ -1,0 +1,69 @@
+{
+  "status": "passed",
+  "checked_utc": "2026-09-20T15:44:08.449172+00:00",
+  "run": "future_window_token_control_v2_20260920",
+  "checks": {
+    "four_groups_training_and_dev_test_complete": true,
+    "initialization_order_negatives_candidates_users_validated": true,
+    "local_complete_archive_sha256_and_readability_passed": true,
+    "final_analysis_written": true,
+    "no_nan_missing_files_configuration_drift_or_unexplained_failure": true,
+    "numerical_reproduction_matched_after_numpy_alignment": true
+  },
+  "analysis_path": "docs/TOKEN_CONTROLLED_RESULTS_20260920.md",
+  "analysis_sha256": "1c7da85d1ef91d9324ec32b06b7975884cc0e23178edb432b110283bb0cab604",
+  "archive_sha256": "3e283eb8c7f263abb7a26126b8b16d8986df211a8ef1f75c4473b2fb7c56aef4",
+  "shutdown_authorized": true,
+  "shutdown_executed": true,
+  "shutdown_request": {
+    "requested_utc": "2026-09-20T16:11:45.420850+00:00",
+    "pid": 838,
+    "ppid": 1,
+    "command": [
+      "/bin/supervisord",
+      "-c",
+      "/init/supervisor/supervisor.ini"
+    ],
+    "signal": "SIGTERM",
+    "analysis_sha256": "1c7da85d1ef91d9324ec32b06b7975884cc0e23178edb432b110283bb0cab604",
+    "remote_checks_passed": true,
+    "trash_deletion": false
+  },
+  "shutdown_verified": true,
+  "shutdown_verified_utc": "2026-09-20T16:47:13.637475+00:00",
+  "shutdown_evidence": {
+    "signal": {
+      "chunk_id": "f85c5a",
+      "wall_time_seconds": 0.630906958,
+      "exit_code": 255,
+      "original_token_count": 29,
+      "output": "SIGTERM_SENT 2026-09-20T16:12:14.084081+00:00\nConnection to connect.westb.seetacloud.com closed by remote host.\r\n"
+    },
+    "probes": [
+      {
+        "time": {
+          "current_time": "2026-09-20 16:12:44 UTC"
+        },
+        "chunk_id": "7ad088",
+        "wall_time_seconds": 1.25e-06,
+        "exit_code": 255,
+        "original_token_count": 21,
+        "output": "ssh: connect to host connect.westb.seetacloud.com port 52553: Operation timed out\r\n"
+      },
+      {
+        "time": {
+          "current_time": "2026-09-20 16:30:55 UTC"
+        },
+        "chunk_id": "58024b",
+        "wall_time_seconds": 1.333e-06,
+        "exit_code": 255,
+        "original_token_count": 21,
+        "output": "ssh: connect to host connect.westb.seetacloud.com port 52553: Operation timed out\r\n"
+      }
+    ],
+    "wait_between_completed_first_and_second_seconds": 25
+  },
+  "shutdown_verification_scope": "Verified supervisor received SIGTERM, SSH closed remotely, and two fresh SSH TCP connections timed out; provider billing/power state not independently queried.",
+  "experiment_artifacts_deleted": false,
+  "trash_deleted": false
+}

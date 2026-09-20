@@ -1,0 +1,71 @@
+{
+  "local_archive": {
+    "status": "verified",
+    "verified_utc": "2026-09-20T14:03:06.948464+00:00",
+    "archive": "/Users/admin/projects/分布式训练/AI/Mypro4Amazon/server_snapshot/future_window_token_control_v2_20260920_evidence.tar.gz",
+    "archive_sha256": "3e283eb8c7f263abb7a26126b8b16d8986df211a8ef1f75c4473b2fb7c56aef4",
+    "local_directory": "/Users/admin/projects/分布式训练/AI/Mypro4Amazon/server_snapshot/token_control_v2_20260920",
+    "payload_files": 90,
+    "all_payload_sha256_matched": true,
+    "json_npz_candidate_caches_readable": true
+  },
+  "numerical_reproduction": {
+    "status": "passed",
+    "checked_utc": "2026-09-20T14:10:21.274487+00:00",
+    "server_numpy": "2.5.2",
+    "local_numpy": "2.5.2",
+    "absolute_tolerance": 1e-12,
+    "maximum_numeric_difference": 4.336808689942018e-19,
+    "numeric_differences": [
+      {
+        "path": "/splits/screen/comparisons/semantic_concat_random_vs_din_random/ndcg5_delta_ci95/0",
+        "absolute_difference": 5.421010862427522e-20
+      },
+      {
+        "path": "/splits/screen/comparisons/semantic_concat_svd_vs_din_svd/ndcg5_delta_ci95/1",
+        "absolute_difference": 5.421010862427522e-20
+      },
+      {
+        "path": "/splits/screen/comparisons/din_svd_vs_din_random/ndcg5_delta_ci95/0",
+        "absolute_difference": 4.336808689942018e-19
+      },
+      {
+        "path": "/splits/screen/comparisons/din_svd_vs_din_random/ndcg5_delta_ci95/1",
+        "absolute_difference": 2.168404344971009e-19
+      },
+      {
+        "path": "/splits/test/comparisons/semantic_concat_random_vs_din_random/ndcg5_delta_ci95/0",
+        "absolute_difference": 5.421010862427522e-20
+      },
+      {
+        "path": "/splits/test/comparisons/semantic_concat_random_vs_din_random/ndcg5_delta_ci95/1",
+        "absolute_difference": 2.168404344971009e-19
+      },
+      {
+        "path": "/splits/test/comparisons/semantic_concat_svd_vs_din_svd/ndcg5_delta_ci95/0",
+        "absolute_difference": 1.0842021724855044e-19
+      },
+      {
+        "path": "/splits/test/comparisons/semantic_concat_svd_vs_din_svd/ndcg5_delta_ci95/1",
+        "absolute_difference": 1.0842021724855044e-19
+      },
+      {
+        "path": "/splits/test/comparisons/din_svd_vs_din_random/ndcg5_delta_ci95/1",
+        "absolute_difference": 2.168404344971009e-19
+      }
+    ],
+    "all_fields_compared_except_local_run_directory": true,
+    "prior_numpy_235_discrepancy": {
+      "file": "token_control_v2_20260920_local_paired_recomputed.json",
+      "preserved": true,
+      "path": "splits/test/comparisons/din_svd_vs_din_random/hr5_delta_ci95/1",
+      "maximum_difference": 2.5e-07,
+      "resolution": "Aligning local NumPy to server version 2.5.2 resolved bootstrap quantile discrepancy; previous output retained."
+    },
+    "archive_receipt": "token_control_v2_20260920_local_receipt.json",
+    "finite_values_verified": true,
+    "missing_fields": false,
+    "configuration_drift": false,
+    "unexplained_failures": false
+  }
+}

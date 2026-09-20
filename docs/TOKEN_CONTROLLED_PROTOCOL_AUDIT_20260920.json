@@ -1,0 +1,254 @@
+{
+  "status": "passed",
+  "safe_shutdown_eligible": true,
+  "full_negative_reconstruction": true,
+  "run_dir": "/root/autodl-tmp/future_window_token_control_v2_20260920",
+  "data_id": "754d426bc41ff19907bd31b3f139e3150d09cc13a746924fecc42e562a92b158",
+  "source_code": {
+    "run_controlled_token_experiments.py": {
+      "sha256": "a59e98478038b1cb5e2427607a260aca8826295505e38d0823f01cd7898e8be9",
+      "snapshot": "/root/autodl-tmp/future_window_token_control_v2_20260920/source_snapshot/code/run_controlled_token_experiments.py"
+    },
+    "run_token_experiments.py": {
+      "sha256": "25360973cbd68d242a23ba534d552c492dc0b3c3e6217239205e56a2bff51bbc",
+      "snapshot": "/root/autodl-tmp/future_window_token_control_v2_20260920/source_snapshot/code/run_token_experiments.py"
+    },
+    "baseline_data.py": {
+      "sha256": "789029ac799bc49e948da08f73d44c1752575e8a47e06ec170ad108c7e69294b",
+      "snapshot": "/root/autodl-tmp/future_window_token_control_v2_20260920/source_snapshot/code/baseline_data.py"
+    },
+    "future_window_data.py": {
+      "sha256": "8f84eaeec212ad426672d864365bb72be166eed31d0dfd640e831eec3f64879c",
+      "snapshot": "/root/autodl-tmp/future_window_token_control_v2_20260920/source_snapshot/code/future_window_data.py"
+    },
+    "baseline_runtime.py": {
+      "sha256": "c04a923c9a58ddd632fb20f6715d61047723421ffe942b739bb317fc1752f190",
+      "snapshot": "/root/autodl-tmp/future_window_token_control_v2_20260920/source_snapshot/code/baseline_runtime.py"
+    },
+    "run_baseline.py": {
+      "sha256": "1c50d2a3340fe9b9720fed6e32bcdfbec1411219c55e4dc3a36e9b06d4f9c4e7",
+      "snapshot": "/root/autodl-tmp/future_window_token_control_v2_20260920/source_snapshot/code/run_baseline.py"
+    },
+    "model_ext.py": {
+      "sha256": "e8211696481cd8080aac250f8f5843b0f2ae13408f9dea325ade47b178785a20",
+      "snapshot": "/root/autodl-tmp/future_window_token_control_v2_20260920/source_snapshot/code/model_ext.py"
+    },
+    "token_models.py": {
+      "sha256": "b63c3b3bd8ff6f98fd6954d1eda9831e1530997aee47b5f3adeba2dc0fa3aded",
+      "snapshot": "/root/autodl-tmp/future_window_token_control_v2_20260920/source_snapshot/code/token_models.py"
+    },
+    "model.py": {
+      "sha256": "3c33762f8c1fe1e3625afa7f5705ce2f10e92f5bdea5bba253932ae056d618c1",
+      "snapshot": "/root/autodl-tmp/future_window_token_control_v2_20260920/source_snapshot/code/model.py"
+    },
+    "config.py": {
+      "sha256": "84b2417942bf0327f522ccf49190f4728c889c01520f03f65913da79b3e68704",
+      "snapshot": "/root/autodl-tmp/future_window_token_control_v2_20260920/source_snapshot/code/config.py"
+    }
+  },
+  "assets": {
+    "base_manifest": {
+      "path": "/root/autodl-tmp/future_window_baseline_20260919/run_manifest.json",
+      "sha256": "4bd993e344d4389b4eaf8c92e9ad2674fa25e4c55c3df959bf0a624cd2a66dfa"
+    },
+    "base_v2": {
+      "path": "/root/autodl-tmp/future_window_baseline_20260919/v2_best.pth",
+      "sha256": "58301a1ce43a1db609c5cd9a22e7b35f5c01849faf32c3a9ff2d8347f8d311c5"
+    },
+    "svd": {
+      "path": "/root/autodl-tmp/future_window_baseline_20260919/svd.npy",
+      "sha256": "51565a6c1788348162aecea6451ad41779bb496c9f484ca450efd2af716b9d4b"
+    },
+    "itemcf": {
+      "path": "/root/autodl-tmp/future_window_cf300_dev_20260919/itemcf.pkl",
+      "sha256": "8fa65999a9574ccc1dd1d0cd5cff97ca21d16db407bdc83e4629c2cd73f240bf"
+    },
+    "cf_manifest": {
+      "path": "/root/autodl-tmp/future_window_cf300_dev_20260919/run_manifest.json",
+      "sha256": "0cf4fbef83ffb760c380d0bd280a99b8b46409475e374a7298e4cca9ac5bc730"
+    },
+    "data_pickle": {
+      "path": "/root/autodl-tmp/future_window_baseline_20260919/data.pkl",
+      "sha256": "e71413ee4eead36954650c1ddb99c8334ead9edecee75ab6b9c01012efd9bb06"
+    }
+  },
+  "snapshot_provenance": {
+    "supplemental_capture.json": {
+      "path": "/root/autodl-tmp/future_window_token_control_v2_20260920/source_snapshot/supplemental_capture.json",
+      "sha256": "318ddee9bbd1f284c63fa68ce281b8823bcccc7c6ab1a9e864fec8d2ce0ef805",
+      "record": {
+        "captured_utc": "2026-09-20T10:05:33.581085+00:00",
+        "timing": "Supplemental capture during active run, not a pre-launch snapshot.",
+        "files": [
+          {
+            "source": "/root/MyPro-Amazon/code/future_window_data.py",
+            "snapshot": "source_snapshot/code/future_window_data.py",
+            "sha256": "8f84eaeec212ad426672d864365bb72be166eed31d0dfd640e831eec3f64879c",
+            "dependency_evidence": "run_baseline imports config, FutureWindowData and TwoTowerV2Model; controlled runner imports run_baseline"
+          },
+          {
+            "source": "/root/MyPro-Amazon/code/run_baseline.py",
+            "snapshot": "source_snapshot/code/run_baseline.py",
+            "sha256": "1c50d2a3340fe9b9720fed6e32bcdfbec1411219c55e4dc3a36e9b06d4f9c4e7",
+            "dependency_evidence": "run_baseline imports config, FutureWindowData and TwoTowerV2Model; controlled runner imports run_baseline"
+          },
+          {
+            "source": "/root/MyPro-Amazon/code/model.py",
+            "snapshot": "source_snapshot/code/model.py",
+            "sha256": "3c33762f8c1fe1e3625afa7f5705ce2f10e92f5bdea5bba253932ae056d618c1",
+            "dependency_evidence": "run_baseline imports config, FutureWindowData and TwoTowerV2Model; controlled runner imports run_baseline"
+          },
+          {
+            "source": "/root/MyPro-Amazon/code/config.py",
+            "snapshot": "source_snapshot/code/config.py",
+            "sha256": "84b2417942bf0327f522ccf49190f4728c889c01520f03f65913da79b3e68704",
+            "dependency_evidence": "run_baseline imports config, FutureWindowData and TwoTowerV2Model; controlled runner imports run_baseline"
+          }
+        ]
+      }
+    },
+    "sha256_supplemental.json": {
+      "path": "/root/autodl-tmp/future_window_token_control_v2_20260920/source_snapshot/sha256_supplemental.json",
+      "sha256": "6e2fcef48a54c23f80381b8d2a54fca985f5604fd5a6f6090a3f6c6bccafb7d0",
+      "record": {
+        "code/baseline_data.py": "789029ac799bc49e948da08f73d44c1752575e8a47e06ec170ad108c7e69294b",
+        "code/baseline_runtime.py": "c04a923c9a58ddd632fb20f6715d61047723421ffe942b739bb317fc1752f190",
+        "code/config.py": "84b2417942bf0327f522ccf49190f4728c889c01520f03f65913da79b3e68704",
+        "code/future_window_data.py": "8f84eaeec212ad426672d864365bb72be166eed31d0dfd640e831eec3f64879c",
+        "code/model.py": "3c33762f8c1fe1e3625afa7f5705ce2f10e92f5bdea5bba253932ae056d618c1",
+        "code/model_ext.py": "e8211696481cd8080aac250f8f5843b0f2ae13408f9dea325ade47b178785a20",
+        "code/run_baseline.py": "1c50d2a3340fe9b9720fed6e32bcdfbec1411219c55e4dc3a36e9b06d4f9c4e7",
+        "code/run_controlled_token_experiments.py": "a59e98478038b1cb5e2427607a260aca8826295505e38d0823f01cd7898e8be9",
+        "code/run_token_experiments.py": "25360973cbd68d242a23ba534d552c492dc0b3c3e6217239205e56a2bff51bbc",
+        "code/token_models.py": "b63c3b3bd8ff6f98fd6954d1eda9831e1530997aee47b5f3adeba2dc0fa3aded",
+        "sha256.json": "3757c579502e585888420e306d8cb87a48c4520fcd81cd3da79e798518969edc",
+        "supplemental_capture.json": "318ddee9bbd1f284c63fa68ce281b8823bcccc7c6ab1a9e864fec8d2ce0ef805",
+        "tools/check_controlled_token.py": "ee55bfea6110428b100a2c660115eeb1cedca3e3506ed5145f5a1e875d672307",
+        "tools/monitor_training.py": "5bd8eb834a3694a7f07ff710266e2dd0f5df3fd9357b6ffa6193fdb62c7dd203"
+      }
+    }
+  },
+  "auditor_sha256": "85ff95f8c9e42ed9d3d07c0a0cd1f9b520b6e4f36e9d7d121e9ff18dd346c1f5",
+  "reconstruction_runtime": {
+    "torch": "2.3.0+cu121",
+    "numpy": "2.5.2"
+  },
+  "itemcf_shape": [
+    378913,
+    300
+  ],
+  "itemcf_neighbors": 300,
+  "itemcf_half_life_days": 180.0,
+  "training": {
+    "sample_count": 4731777,
+    "batch_size": 256,
+    "training_workers": 4,
+    "reconstruction_workers": 0,
+    "epochs": [
+      {
+        "epoch": 1,
+        "effective_sample_count": 4731648,
+        "steps": 18483,
+        "dropped_samples": 129,
+        "order_sha256_by_group": {
+          "din_random": "36b714f7c29b19f3e8b2d02938e8f7afece656aa7188c8d0b185ee857e5fabff",
+          "din_svd": "36b714f7c29b19f3e8b2d02938e8f7afece656aa7188c8d0b185ee857e5fabff",
+          "semantic_concat_random": "36b714f7c29b19f3e8b2d02938e8f7afece656aa7188c8d0b185ee857e5fabff",
+          "semantic_concat_svd": "36b714f7c29b19f3e8b2d02938e8f7afece656aa7188c8d0b185ee857e5fabff"
+        },
+        "negatives": {
+          "full_reconstruction": true,
+          "effective_samples_checked": 4731648,
+          "ordered_sample_and_negative_sha256": "5d0379110c587e42b00bad033bfabb307bfef1e3b0bf54643b0b6dd4a5850b40",
+          "negative_ids_per_sample": 4,
+          "legality_checks": "unique, active, in-range, not target, not train positive",
+          "four_group_prefix_dataset_probe_count": 128,
+          "probe_sample_and_negative_sha256": "516397b2fbf14c12b73375c882ef5ebcccc3ccfcb69ea1867c207f78c9e91bf1"
+        }
+      },
+      {
+        "epoch": 2,
+        "effective_sample_count": 4731648,
+        "steps": 18483,
+        "dropped_samples": 129,
+        "order_sha256_by_group": {
+          "din_random": "f497fde43e03ed47e0c01b350f5a156d6c636b02ac09c1536750e9b32c971f56",
+          "din_svd": "f497fde43e03ed47e0c01b350f5a156d6c636b02ac09c1536750e9b32c971f56",
+          "semantic_concat_random": "f497fde43e03ed47e0c01b350f5a156d6c636b02ac09c1536750e9b32c971f56",
+          "semantic_concat_svd": "f497fde43e03ed47e0c01b350f5a156d6c636b02ac09c1536750e9b32c971f56"
+        },
+        "negatives": {
+          "full_reconstruction": true,
+          "effective_samples_checked": 4731648,
+          "ordered_sample_and_negative_sha256": "6e6591f9fd151c5d3439e264256441c670016f245dd09ab9e10c17d9834c8c1c",
+          "negative_ids_per_sample": 4,
+          "legality_checks": "unique, active, in-range, not target, not train positive",
+          "four_group_prefix_dataset_probe_count": 128,
+          "probe_sample_and_negative_sha256": "d27c80fad350040c43a944c968fc59fedb411499f16d20d268f11ab3f74d1ff3"
+        }
+      },
+      {
+        "epoch": 3,
+        "effective_sample_count": 4731648,
+        "steps": 18483,
+        "dropped_samples": 129,
+        "order_sha256_by_group": {
+          "din_random": "4b523b0944689cb3e575fee35faffe5522d83296f20b4a01558de2dcdbb88729",
+          "din_svd": "4b523b0944689cb3e575fee35faffe5522d83296f20b4a01558de2dcdbb88729",
+          "semantic_concat_random": "4b523b0944689cb3e575fee35faffe5522d83296f20b4a01558de2dcdbb88729",
+          "semantic_concat_svd": "4b523b0944689cb3e575fee35faffe5522d83296f20b4a01558de2dcdbb88729"
+        },
+        "negatives": {
+          "full_reconstruction": true,
+          "effective_samples_checked": 4731648,
+          "ordered_sample_and_negative_sha256": "c76d7387835176ca564588b6a1b5c95142a230100436c1017c2671d086af8ab7",
+          "negative_ids_per_sample": 4,
+          "legality_checks": "unique, active, in-range, not target, not train positive",
+          "four_group_prefix_dataset_probe_count": 128,
+          "probe_sample_and_negative_sha256": "963b5ef5be094664f66c3df608086c83b3242ff813d2debfa60e9964a36f0122"
+        }
+      }
+    ]
+  },
+  "candidates": {
+    "screen": {
+      "users": 100000,
+      "candidates_per_user": 75,
+      "ordered_identity_and_candidate_ids_sha256": "d8e0b727ef606c0f57264e75fb8385d0925a4eb3aa8725868ece2da4827b3d40",
+      "pool_hits": 11723,
+      "pool_hr": 0.11723,
+      "cache_path": "/root/autodl-tmp/future_window_token_control_v2_20260920/cache/pools_screen_2e6e630b051374e923117f25ecebd3b7b621af622316c57dab1de98e5bb57dbd.pkl",
+      "cache_sha256": "6ca99bad069addee1e8abf61d0b0b2929152ba3bba7b574a4fb38c28fd864c93",
+      "cache_key": "2e6e630b051374e923117f25ecebd3b7b621af622316c57dab1de98e5bb57dbd",
+      "records_fingerprint": "29125ecfc1c07969893c1730d204c0c500328632a731f9ad33ead7b7c1a3d113",
+      "all_four_final_identity_and_pool_hits_match": true
+    },
+    "test": {
+      "users": 100000,
+      "candidates_per_user": 75,
+      "ordered_identity_and_candidate_ids_sha256": "1c3d06ba0a77710302d0af826ada7c77e64651b1fecb35a7517fe8a18debf78a",
+      "pool_hits": 11644,
+      "pool_hr": 0.11644,
+      "cache_path": "/root/autodl-tmp/future_window_token_control_v2_20260920/cache/pools_test_278152944aeabd9f98df38f0b8e4a5f9adc21d6eebdf9e6c3be499fe80880d42.pkl",
+      "cache_sha256": "fbb4bfb95d15cd76d8bb28b57cdaa94be924814a86d4cda543f1453d47ce541b",
+      "cache_key": "278152944aeabd9f98df38f0b8e4a5f9adc21d6eebdf9e6c3be499fe80880d42",
+      "records_fingerprint": "6dd85bd724eb5789b6af2fd87a4aad72f1bed9a979a861aadb49857c9534b9d0",
+      "all_four_final_identity_and_pool_hits_match": true
+    }
+  },
+  "dev_test_users_disjoint": true,
+  "checks": [
+    "frozen source and recorded runner hash",
+    "source asset hashes and protocol",
+    "four deterministic DataLoader order rebuilds per epoch",
+    "full effective negative reconstruction plus four actual PrefixDataset probes",
+    "actual candidate IDs, history exclusions, targets and final row identities"
+  ],
+  "limitations": [
+    "Order and negatives are deterministic reconstructions from frozen code/configuration, not recorded per-batch training traces.",
+    "DataLoader workers only fetch map-style samples; worker count does not change the main-process sampler order. Reconstruction uses workers=0.",
+    "Negative reconstruction runs once per epoch over effective shuffled indices; four-group equality is additionally checked with 128 distributed actual PrefixDataset samples.",
+    "Snapshot equality anchors the runner to its recorded hash; dependency snapshots require their own retained provenance. This audit does not recreate launch-time evidence.",
+    "Candidate caches are checked directly and matched to final arrays; V2 recall and RRF generation are not rerun."
+  ]
+}

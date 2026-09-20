@@ -1,0 +1,116 @@
+{
+  "scope": "Synthetic correctness checks only; not quality evidence",
+  "local_cpu": {
+    "status": "passed",
+    "data": "synthetic-only",
+    "training_seed": 42,
+    "embed_dim": 256,
+    "formal_topology": true,
+    "scope": "initialization, actual training RNG, batch order, negatives, BPR backward",
+    "devices": {
+      "cpu": {
+        "exact_tensor_comparisons": 226,
+        "first_layer_bias_explicit_copy": true,
+        "variants": {
+          "din_random": {
+            "steps": 2,
+            "loss": 1.4947896003723145,
+            "finite_gradient_tensors": 30,
+            "first_training_rng_sha256": {
+              "cpu": "5feb54a46230d321d888e9b43cf5a57492665f199e4377408d79ee460e36679c",
+              "cuda": null
+            }
+          },
+          "din_svd": {
+            "steps": 2,
+            "loss": 1.4296931028366089,
+            "finite_gradient_tensors": 30,
+            "first_training_rng_sha256": {
+              "cpu": "5feb54a46230d321d888e9b43cf5a57492665f199e4377408d79ee460e36679c",
+              "cuda": null
+            }
+          },
+          "semantic_concat_random": {
+            "steps": 2,
+            "loss": 0.6758694052696228,
+            "finite_gradient_tensors": 40,
+            "first_training_rng_sha256": {
+              "cpu": "5feb54a46230d321d888e9b43cf5a57492665f199e4377408d79ee460e36679c",
+              "cuda": null
+            }
+          },
+          "semantic_concat_svd": {
+            "steps": 2,
+            "loss": 0.6605876088142395,
+            "finite_gradient_tensors": 40,
+            "first_training_rng_sha256": {
+              "cpu": "5feb54a46230d321d888e9b43cf5a57492665f199e4377408d79ee460e36679c",
+              "cuda": null
+            }
+          }
+        }
+      }
+    }
+  },
+  "server_cuda": {
+    "status": "passed",
+    "data": "synthetic-only",
+    "training_seed": 42,
+    "embed_dim": 256,
+    "formal_topology": true,
+    "scope": "initialization, actual training RNG, batch order, negatives, BPR backward",
+    "devices": {
+      "cuda": {
+        "exact_tensor_comparisons": 226,
+        "first_layer_bias_explicit_copy": true,
+        "variants": {
+          "din_random": {
+            "steps": 2,
+            "loss": 1.0190488398075104,
+            "finite_gradient_tensors": 30,
+            "first_training_rng_sha256": {
+              "cpu": "5feb54a46230d321d888e9b43cf5a57492665f199e4377408d79ee460e36679c",
+              "cuda": "aefdce03def94ffed42159e55677ec20e91200e1981f25b1f271b6fd99c3c263"
+            }
+          },
+          "din_svd": {
+            "steps": 2,
+            "loss": 1.0033634901046753,
+            "finite_gradient_tensors": 30,
+            "first_training_rng_sha256": {
+              "cpu": "5feb54a46230d321d888e9b43cf5a57492665f199e4377408d79ee460e36679c",
+              "cuda": "aefdce03def94ffed42159e55677ec20e91200e1981f25b1f271b6fd99c3c263"
+            }
+          },
+          "semantic_concat_random": {
+            "steps": 2,
+            "loss": 0.9344516396522522,
+            "finite_gradient_tensors": 40,
+            "first_training_rng_sha256": {
+              "cpu": "5feb54a46230d321d888e9b43cf5a57492665f199e4377408d79ee460e36679c",
+              "cuda": "aefdce03def94ffed42159e55677ec20e91200e1981f25b1f271b6fd99c3c263"
+            }
+          },
+          "semantic_concat_svd": {
+            "steps": 2,
+            "loss": 0.9207605421543121,
+            "finite_gradient_tensors": 40,
+            "first_training_rng_sha256": {
+              "cpu": "5feb54a46230d321d888e9b43cf5a57492665f199e4377408d79ee460e36679c",
+              "cuda": "aefdce03def94ffed42159e55677ec20e91200e1981f25b1f271b6fd99c3c263"
+            }
+          }
+        }
+      }
+    }
+  },
+  "extra_local_check": "actual DIN/concat ranking evaluation, metrics and uid/position arrays passed",
+  "versions": {
+    "local_torch": "2.14.0",
+    "server_torch": "2.3.0+cu121"
+  },
+  "source_sha256": {
+    "code/run_controlled_token_experiments.py": "a59e98478038b1cb5e2427607a260aca8826295505e38d0823f01cd7898e8be9",
+    "tools/check_controlled_token.py": "ee55bfea6110428b100a2c660115eeb1cedca3e3506ed5145f5a1e875d672307"
+  }
+}
