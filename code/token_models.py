@@ -52,10 +52,12 @@ class SemanticTokenDIN(nn.Module):
     """
 
     TOKEN_COUNT = 6
+    TOKEN_NAMES = ("seq", "user", "item", "context", "cross", "dense")
 
     def __init__(self, num_users, num_items, num_brands, num_categories,
                  embed_dim=256, brand_embed_dim=64, hidden_dims=None,
-                 hist_len=50, dropout=0.1, token_dim=None, fusion="concat"):
+                 hist_len=50, dropout=0.1, token_dim=None, fusion="concat",
+                 ablate_tokens=None):
         super().__init__()
         if token_dim is None:
             token_dim = embed_dim
@@ -67,6 +69,10 @@ class SemanticTokenDIN(nn.Module):
         self.token_dim = int(token_dim)
         self.hist_len = int(hist_len)
         self.fusion = fusion
+        unknown = set(ablate_tokens or ()) - set(self.TOKEN_NAMES)
+        if unknown:
+            raise ValueError(f"unknown token ablation: {sorted(unknown)}")
+        self.ablate_tokens = tuple(ablate_tokens or ())
 
         self.user_embedding = nn.Embedding(num_users, embed_dim, padding_idx=0)
         self.item_embedding = nn.Embedding(num_items, embed_dim, padding_idx=0)
@@ -179,7 +185,13 @@ class SemanticTokenDIN(nn.Module):
             self.cross_proj(cross),
             self.dense_proj(dense),
         ], dim=1)
-        return tokens + self.token_type.unsqueeze(0)
+        tokens = tokens + self.token_type.unsqueeze(0)
+        if self.ablate_tokens:
+            keep = torch.ones(self.TOKEN_COUNT, device=device, dtype=tokens.dtype)
+            for name in self.ablate_tokens:
+                keep[self.TOKEN_NAMES.index(name)] = 0
+            tokens = tokens * keep.view(1, -1, 1)
+        return tokens
 
     def _score_item(self, user, batch):
         tokens = self._tokenize(user, batch)

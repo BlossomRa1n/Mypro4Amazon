@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 
 def seed_all(seed):
@@ -73,6 +74,32 @@ def pair_auc(positive, negative):
     if negative.ndim != 2 or negative.shape[0] != len(positive):
         raise ValueError("Negative scores must have shape [users, negatives]")
     return float(((positive[:, None] > negative) + .5 * (positive[:, None] == negative)).mean())
+
+
+def bpr_loss(positive, negative):
+    """Bayesian pairwise ranking loss for one positive and K negatives."""
+    positive, negative = torch.as_tensor(positive), torch.as_tensor(negative)
+    if positive.ndim != 1 or negative.ndim != 2 or negative.shape[0] != positive.shape[0]:
+        raise ValueError("expected positive [B] and negative [B,K]")
+    return F.softplus(negative - positive[:, None]).mean()
+
+
+def sampled_softmax_loss(positive, negative, temperature=1.0):
+    """Listwise loss over one positive plus a sampled candidate set.
+
+    The positive is always column zero, so this can be compared against BPR
+    with exactly the same negative matrix.  ``temperature`` is intentionally
+    explicit and defaults to one; no proposal-probability correction is
+    applied because the mixed sampler is a ranking set, not a catalog model.
+    """
+    positive, negative = torch.as_tensor(positive), torch.as_tensor(negative)
+    if positive.ndim != 1 or negative.ndim != 2 or negative.shape[0] != positive.shape[0]:
+        raise ValueError("expected positive [B] and negative [B,K]")
+    if not np.isfinite(float(temperature)) or float(temperature) <= 0:
+        raise ValueError("temperature must be finite and positive")
+    logits = torch.cat([positive[:, None], negative], dim=1) / float(temperature)
+    labels = torch.zeros(positive.shape[0], dtype=torch.long, device=positive.device)
+    return F.cross_entropy(logits, labels)
 
 
 def ranking_metrics(rankings, targets, k):

@@ -209,8 +209,78 @@ class BenchmarkData:
 
 
 class PrefixDataset(Dataset):
-    def __init__(self, data, negatives=4):
-        self.data, self.k, self.epoch = data, negatives, 0
+    """Prefix samples with deterministic random or mixed candidate negatives.
+
+    ``candidate_pools`` must be in the same order as ``data.train_positions``
+    and contain ranked item IDs for each training position.  The mixed policy
+    takes two candidates from ranks 11--25 and 26--50 (one-based), then fills
+    the remaining slots with random eligible negatives.  Candidate IDs are
+    always filtered against the user's complete known training positives.
+    """
+    def __init__(self, data, negatives=4, negative_policy="random",
+                 candidate_pools=None, candidate_ranges=((11, 25, 2), (26, 50, 2))):
+        self.data, self.k, self.epoch = data, int(negatives), 0
+        self.negative_policy = str(negative_policy)
+        self.candidate_ranges = tuple(tuple(int(value) for value in row)
+                                      for row in candidate_ranges)
+        if self.k < 1:
+            raise ValueError("negatives must be positive")
+        if self.negative_policy not in ("random", "mixed_rrf"):
+            raise ValueError("negative_policy must be random or mixed_rrf")
+        if self.negative_policy == "mixed_rrf":
+            candidate_pools = candidate_pools if candidate_pools is not None else ()
+            if len(candidate_pools) != len(self):
+                raise ValueError("candidate_pools must match train sample count")
+            if sum(row[2] for row in self.candidate_ranges) >= self.k:
+                raise ValueError("candidate quotas must be smaller than negatives")
+        elif candidate_pools is not None:
+            raise ValueError("candidate_pools only applies to mixed_rrf policy")
+        self.candidate_pools = candidate_pools
+
+    def _ranked_pool(self, idx):
+        pool = self.candidate_pools[idx]
+        if isinstance(pool, dict):
+            # Candidate-pool dicts preserve the RRF insertion order.
+            pool = list(pool)
+        return np.asarray(pool, dtype=np.int64).reshape(-1)
+
+    def _mixed_negatives(self, idx, uid, target, rng):
+        excluded = set(self.data.train_sets[uid])
+        excluded.add(int(target))
+        selected = []
+        seen = set(excluded)
+        pool = self._ranked_pool(idx)
+        for start, stop, quota in self.candidate_ranges:
+            if start < 1 or stop < start or quota < 0:
+                raise ValueError("invalid candidate rank range")
+            eligible = [int(item) for item in pool[start - 1:stop]
+                        if int(item) not in seen and int(item) >= 2]
+            take = min(quota, len(eligible))
+            if take:
+                chosen = rng.choice(np.asarray(eligible, dtype=np.int64), take, replace=False)
+            else:
+                chosen = np.asarray([], dtype=np.int64)
+            selected.extend(int(item) for item in chosen)
+            seen.update(int(item) for item in chosen)
+        # A user's known-positive history can remove items from a rank band.
+        # Fill missing candidate quotas from the remaining ranked pool before
+        # falling back to catalog-random negatives, and leave the fallback
+        # count auditable in the sampler manifest.
+        missing = sum(row[2] for row in self.candidate_ranges) - len(selected)
+        if missing:
+            remaining = [int(item) for item in pool if int(item) >= 2 and int(item) not in seen]
+            take = min(missing, len(remaining))
+            if take:
+                chosen = rng.choice(np.asarray(remaining, dtype=np.int64), take, replace=False)
+                selected.extend(int(item) for item in chosen)
+                seen.update(int(item) for item in chosen)
+        random_count = self.k - len(selected)
+        if random_count:
+            random = self.data.negatives(uid, target, random_count, rng, excluded=seen)
+            selected.extend(int(item) for item in random)
+        if len(selected) != self.k or len(set(selected)) != self.k:
+            raise AssertionError("negative sampler produced duplicate or missing items")
+        return np.asarray(selected, dtype=np.int64)
 
     def __len__(self):
         return len(self.data.train_positions)
@@ -222,7 +292,10 @@ class PrefixDataset(Dataset):
         batch = data.user_features(uid, position)
         batch.update({"pos_" + key: value for key, value in data.item_features(target).items()})
         rng = np.random.default_rng(np.random.SeedSequence([data.seed, self.epoch, int(idx)]))
-        negatives = data.negatives(uid, target, self.k, rng)
+        if self.negative_policy == "random":
+            negatives = data.negatives(uid, target, self.k, rng)
+        else:
+            negatives = self._mixed_negatives(idx, uid, target, rng)
         batch.update({"neg_" + key: value for key, value in data.item_features(negatives).items()})
         return batch
 
