@@ -1,0 +1,48 @@
+{
+  "date": "2026-09-22",
+  "scope": "local implementation and tiny fixtures only; no server training",
+  "model_roles": {
+    "protocol_and_high_risk_audit": "Ultra",
+    "implementation": "Medium"
+  },
+  "tests": {
+    "command": "PYTHONPATH=code python -m unittest discover -s tests -v",
+    "passed": 67,
+    "failed": 0,
+    "seconds": 2.336,
+    "log": "baseline_runs/next_cross_smoke_20260922_audited/local_tests.log",
+    "log_sha256": "7c67e76dc8fc2171b955bf5cffb390b22e5a49537892b353cac73cc15faa2d03"
+  },
+  "checks": {
+    "py_compile": "passed",
+    "git_diff_check": "passed",
+    "ultra_high_risk_audit": "passed for local implementation"
+  },
+  "smoke": {
+    "directory": "baseline_runs/next_cross_smoke_20260922_audited",
+    "groups": 9,
+    "epochs_per_group": 3,
+    "retained_checkpoints": 9,
+    "selection_status": "smoke_only",
+    "final_evaluation_allowed": false,
+    "test_future_labels_read": false,
+    "sha256_manifest": "baseline_runs/next_cross_smoke_20260922_audited/SHA256SUMS",
+    "sha256_manifest_hash": "541c37a487b19c2582dcefc6706f422fd92989e8facc6006711bda6b823f1c75",
+    "readable_json_files": 92
+  },
+  "final_path_test": "Tiny fixture exercises actual final training and paired final scoring; only registered plan loader mocked. Production smoke promotion remains forbidden; repeat and changed-run-directory evaluations rejected.",
+  "implementation_sha256": {
+    "code/run_cross_multiseed.py": "9bef39f4a77aff1e7c40ac3ee212f07cb150374d5c2360bcd017a973fb8d557c",
+    "code/token_models.py": "feb8f458e5e00ce8e88fb405a5f3d305a744b0838106caaba9aabbf1a5c56de4",
+    "tests/test_cross_multiseed.py": "801a5bcfae7ae33607ffc6189c08498b052caf796cc2661d65c0f3f2696b6a3e",
+    "tests/test_cross_multiseed_runtime.py": "bdb6350d71f2bb932cb9ec1ca86808beb5f6bc2d7406bcd13cd69a1fcf7d2205",
+    "tests/test_cross_multiseed_stages.py": "dc795db0e1f8b62d8d29a3ec507ce05c1b8860a77851c91d018f03276c71b56d"
+  },
+  "formal_run_blockers": [
+    "Historical raw user ID exclusions with complete verifiable sources are not yet available locally.",
+    "Full base assets must use matching data/encoders, V2, SVD and ItemCF 300-neighbor provenance.",
+    "Disk, host RAM, GPU capacity and production throughput require server preflight."
+  ],
+  "formal_experiments_started": false,
+  "model_quality_conclusion": "No new quality measurements; tiny metrics are process checks only."
+}

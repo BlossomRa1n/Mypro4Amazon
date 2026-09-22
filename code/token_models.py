@@ -69,7 +69,7 @@ class SemanticTokenDIN(nn.Module):
         self.token_dim = int(token_dim)
         self.hist_len = int(hist_len)
         self.fusion = fusion
-        if cross_mode not in ("raw", "normalized", "gated", "normalized_gated"):
+        if cross_mode not in ("raw", "normalized", "gated", "normalized_gated", "zero_cross"):
             raise ValueError(f"cross_mode={cross_mode}")
         self.cross_mode = str(cross_mode)
         unknown = set(ablate_tokens or ()) - set(self.TOKEN_NAMES)
@@ -206,6 +206,11 @@ class SemanticTokenDIN(nn.Module):
             self.dense_proj(dense),
         ], dim=1)
         tokens = tokens + self.token_type.unsqueeze(0)
+        # ``zero_cross`` is a structural control: retain the cross projection,
+        # gate parameter and token slot so checkpoints remain shape compatible,
+        # but zero the complete slot after the type offset is applied.
+        if self.cross_mode == "zero_cross":
+            tokens[:, self.TOKEN_NAMES.index("cross"), :] = 0
         if self.ablate_tokens:
             keep = torch.ones(self.TOKEN_COUNT, device=device, dtype=tokens.dtype)
             for name in self.ablate_tokens:
