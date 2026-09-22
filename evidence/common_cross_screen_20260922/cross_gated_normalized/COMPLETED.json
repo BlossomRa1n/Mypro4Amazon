@@ -1,0 +1,32 @@
+{
+  "status": "complete",
+  "variant": "cross_gated_normalized",
+  "manifest": {
+    "variant": "cross_gated_normalized",
+    "spec": {
+      "negatives": 16,
+      "policy": "mixed_rrf",
+      "loss": "bpr",
+      "cross_mode": "normalized_gated"
+    },
+    "seed": 42,
+    "init_seed": 424242,
+    "epochs": 3,
+    "data_id": "d68d1f3a050d1f374b759aea2559fb30ce0bd6cbfe3b690df7d611f6ee426a93",
+    "source": {
+      "base_run": "/root/autodl-tmp/token_negative_screen_base_20260921",
+      "base_manifest": "1d3e1539ade728a45f29fc08c39d07bb55dd742bc434fc79238f6c0a178efd74",
+      "base_v2": "892e86bc2e7e4774391223e655a55e92e2fe5a14f1429d3cff51929208278126",
+      "svd": "9b7ab882d5b2b99bdc8834256195163ab95746299d1d02183b234dfdabd37f6c",
+      "itemcf": "2f6a926631b2f9ef94a54d767b42af68b436afad92a7a9d200c21e5d078a130b",
+      "data_id": "d68d1f3a050d1f374b759aea2559fb30ce0bd6cbfe3b690df7d611f6ee426a93"
+    },
+    "model_config": {
+      "fusion": "concat",
+      "user_init": "random",
+      "cross_mode": "normalized_gated"
+    },
+    "train_samples": 572569,
+    "fixed_random_pool_sha256": "6bc679ddd1619573d7fa0a00a6113393c62bb6811e0bd843ee7bfc9ca2951bae"
+  }
+}

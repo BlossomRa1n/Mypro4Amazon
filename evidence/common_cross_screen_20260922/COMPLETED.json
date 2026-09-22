@@ -1,0 +1,11 @@
+{
+  "status": "complete",
+  "variants": [
+    "random4_common",
+    "random16_common",
+    "cross_raw",
+    "cross_normalized",
+    "cross_gated_normalized"
+  ],
+  "results": "results.json"
+}

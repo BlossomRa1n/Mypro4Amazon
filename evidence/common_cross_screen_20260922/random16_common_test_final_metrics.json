@@ -1,0 +1,20 @@
+{
+  "candidate_pool": {
+    "hr": 0.0536,
+    "ndcg": 0.011458766653397444,
+    "recall": 0.030843391194775478,
+    "users": 20000,
+    "k": 75
+  },
+  "din": {
+    "hr": 0.018,
+    "ndcg": 0.00820730823095768,
+    "recall": 0.009998000402375402,
+    "users": 20000,
+    "k": 5
+  },
+  "pool_size_mean": 75.0,
+  "label": "random16_common_test_final",
+  "users": 20000,
+  "din_conditional_hr5": 0.33582089552238803
+}

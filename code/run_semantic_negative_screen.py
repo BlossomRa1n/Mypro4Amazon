@@ -41,6 +41,7 @@ class NegativeScreenSuite(ControlledSuite):
     def __init__(self, args):
         super().__init__(args)
         self.training_pools = None
+        self.fixed_random_pools = None
         if args.training_pools and type(self) is NegativeScreenSuite:
             self.training_pools = np.load(args.training_pools, mmap_mode="r")
             if len(self.training_pools) != len(self.data.train_positions):
@@ -72,20 +73,26 @@ class NegativeScreenSuite(ControlledSuite):
         completed = directory / "COMPLETED.json"
         model = self._new_model("concat", "random")
         seed_all(self.args.seed)
+        if hasattr(self, "_initial_state_audit"):
+            write_json(directory / "initial_state_audit.json",
+                       self._initial_state_audit(model, "concat", "random"))
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=self.args.epochs, eta_min=1e-6)
         dataset = PrefixDataset(
             self.data, spec["negatives"], negative_policy=spec["policy"],
             candidate_pools=self.training_pools if spec["policy"] == "mixed_rrf" else None,
+            fixed_random_pools=self.fixed_random_pools if spec["policy"] == "random" else None,
         )
         history = []
         manifest = {
             "variant": variant, "spec": spec, "seed": self.args.seed,
             "init_seed": self.args.init_seed, "epochs": self.args.epochs,
             "data_id": self.data_id, "source": self.source,
-            "model_config": {"fusion": "concat", "user_init": "random"},
+            "model_config": {"fusion": "concat", "user_init": "random",
+                             "cross_mode": spec.get("cross_mode", "raw")},
             "train_samples": len(dataset),
+            "fixed_random_pool_sha256": getattr(self, "fixed_random_pool_sha256", ""),
         }
         write_json(directory / "manifest.json", manifest)
         for epoch in range(self.args.epochs):

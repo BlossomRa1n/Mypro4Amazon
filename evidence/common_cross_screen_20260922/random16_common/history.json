@@ -1,0 +1,80 @@
+[
+  {
+    "epoch": 1,
+    "loss": 0.0924647829382079,
+    "steps": 2236,
+    "seconds": 157.23485157173127,
+    "metrics": {
+      "candidate_pool": {
+        "hr": 0.05735,
+        "ndcg": 0.012705209653726,
+        "recall": 0.03233186312430706,
+        "users": 20000,
+        "k": 75
+      },
+      "din": {
+        "hr": 0.01815,
+        "ndcg": 0.008206419674075314,
+        "recall": 0.010400510223094427,
+        "users": 20000,
+        "k": 5
+      },
+      "pool_size_mean": 75.0,
+      "label": "random16_common_screen_epoch1",
+      "users": 20000,
+      "din_conditional_hr5": 0.3164777680906713
+    }
+  },
+  {
+    "epoch": 2,
+    "loss": 0.00446578248881186,
+    "steps": 2236,
+    "seconds": 157.32282417546958,
+    "metrics": {
+      "candidate_pool": {
+        "hr": 0.05735,
+        "ndcg": 0.012705209653726,
+        "recall": 0.03233186312430706,
+        "users": 20000,
+        "k": 75
+      },
+      "din": {
+        "hr": 0.0194,
+        "ndcg": 0.008965717155377776,
+        "recall": 0.01127825497833918,
+        "users": 20000,
+        "k": 5
+      },
+      "pool_size_mean": 75.0,
+      "label": "random16_common_screen_epoch2",
+      "users": 20000,
+      "din_conditional_hr5": 0.33827375762859635
+    }
+  },
+  {
+    "epoch": 3,
+    "loss": 0.00013221958328922352,
+    "steps": 2236,
+    "seconds": 157.45435382891446,
+    "metrics": {
+      "candidate_pool": {
+        "hr": 0.05735,
+        "ndcg": 0.012705209653726,
+        "recall": 0.03233186312430706,
+        "users": 20000,
+        "k": 75
+      },
+      "din": {
+        "hr": 0.0189,
+        "ndcg": 0.009018939235877526,
+        "recall": 0.011086468242665891,
+        "users": 20000,
+        "k": 5
+      },
+      "pool_size_mean": 75.0,
+      "label": "random16_common_screen_epoch3",
+      "users": 20000,
+      "din_conditional_hr5": 0.3295553618134263
+    }
+  }
+]

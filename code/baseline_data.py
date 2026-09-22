@@ -218,7 +218,8 @@ class PrefixDataset(Dataset):
     always filtered against the user's complete known training positives.
     """
     def __init__(self, data, negatives=4, negative_policy="random",
-                 candidate_pools=None, candidate_ranges=((11, 25, 2), (26, 50, 2))):
+                 candidate_pools=None, candidate_ranges=((11, 25, 2), (26, 50, 2)),
+                 fixed_random_pools=None):
         self.data, self.k, self.epoch = data, int(negatives), 0
         self.negative_policy = str(negative_policy)
         self.candidate_ranges = tuple(tuple(int(value) for value in row)
@@ -236,6 +237,14 @@ class PrefixDataset(Dataset):
         elif candidate_pools is not None:
             raise ValueError("candidate_pools only applies to mixed_rrf policy")
         self.candidate_pools = candidate_pools
+        self.fixed_random_pools = fixed_random_pools
+        if fixed_random_pools is not None:
+            if negative_policy != "random":
+                raise ValueError("fixed_random_pools only applies to random policy")
+            if len(fixed_random_pools) != len(self):
+                raise ValueError("fixed_random_pools must match train sample count")
+            if fixed_random_pools.ndim != 2 or fixed_random_pools.shape[1] < self.k:
+                raise ValueError("fixed_random_pools must have at least k columns")
 
     def _ranked_pool(self, idx):
         pool = self.candidate_pools[idx]
@@ -293,7 +302,14 @@ class PrefixDataset(Dataset):
         batch.update({"pos_" + key: value for key, value in data.item_features(target).items()})
         rng = np.random.default_rng(np.random.SeedSequence([data.seed, self.epoch, int(idx)]))
         if self.negative_policy == "random":
-            negatives = data.negatives(uid, target, self.k, rng)
+            if self.fixed_random_pools is None:
+                negatives = data.negatives(uid, target, self.k, rng)
+            else:
+                negatives = np.asarray(self.fixed_random_pools[idx, :self.k], dtype=np.int64)
+                if len(set(negatives.tolist())) != self.k or any(
+                        int(item) < 2 or int(item) in data.train_sets[uid] or int(item) == target
+                        for item in negatives):
+                    raise AssertionError("fixed random pool contains invalid negative")
         else:
             negatives = self._mixed_negatives(idx, uid, target, rng)
         batch.update({"neg_" + key: value for key, value in data.item_features(negatives).items()})

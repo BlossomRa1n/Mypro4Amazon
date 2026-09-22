@@ -57,7 +57,7 @@ class SemanticTokenDIN(nn.Module):
     def __init__(self, num_users, num_items, num_brands, num_categories,
                  embed_dim=256, brand_embed_dim=64, hidden_dims=None,
                  hist_len=50, dropout=0.1, token_dim=None, fusion="concat",
-                 ablate_tokens=None):
+                 ablate_tokens=None, cross_mode="raw"):
         super().__init__()
         if token_dim is None:
             token_dim = embed_dim
@@ -69,6 +69,9 @@ class SemanticTokenDIN(nn.Module):
         self.token_dim = int(token_dim)
         self.hist_len = int(hist_len)
         self.fusion = fusion
+        if cross_mode not in ("raw", "normalized", "gated", "normalized_gated"):
+            raise ValueError(f"cross_mode={cross_mode}")
+        self.cross_mode = str(cross_mode)
         unknown = set(ablate_tokens or ()) - set(self.TOKEN_NAMES)
         if unknown:
             raise ValueError(f"unknown token ablation: {sorted(unknown)}")
@@ -99,6 +102,11 @@ class SemanticTokenDIN(nn.Module):
         # Fixed token positions already identify semantic roles for MLP-Mixer;
         # a zero-initialized type offset is available for later adaptation.
         self.token_type = nn.Parameter(torch.zeros(self.TOKEN_COUNT, token_dim))
+        # Keep the gate parameter in every cross variant so parameter shapes
+        # remain comparable. Raw/normalized start effectively ungated (1.0);
+        # gated variants override this value to sigmoid(-2.944439) ~= 0.05.
+        self.cross_gate_logit = nn.Parameter(torch.tensor(
+            -2.944439 if "gated" in self.cross_mode else 10.0))
 
         if fusion == "rankmixer":
             self.mixer = RankMixerBlock(self.TOKEN_COUNT, token_dim, dropout=dropout)
@@ -176,13 +184,25 @@ class SemanticTokenDIN(nn.Module):
             item_avg, item_count,
         ], dim=-1)
         context = torch.cat([category, brand, item_avg, item_count], dim=-1)
-        cross = user["user_emb"] * item
+        cross_user = user["user_emb"]
+        cross_item = item
+        if "normalized" in self.cross_mode:
+            cross_user = F.normalize(cross_user, dim=-1, eps=1e-6)
+            cross_item = F.normalize(cross_item, dim=-1, eps=1e-6)
+        cross = cross_user * cross_item
+        if "normalized" in self.cross_mode:
+            # Match the raw product's initial scale for the 256-dim SVD/item
+            # and random/user initialization used by the controlled screen.
+            cross = cross * 0.32
+        cross_token = self.cross_proj(cross)
+        if "gated" in self.cross_mode:
+            cross_token = torch.sigmoid(self.cross_gate_logit) * cross_token
         tokens = torch.stack([
             self.seq_proj(interest),
             self.user_proj(user["user_emb"]),
             self.item_proj(item),
             self.context_proj(context),
-            self.cross_proj(cross),
+            cross_token,
             self.dense_proj(dense),
         ], dim=1)
         tokens = tokens + self.token_type.unsqueeze(0)
