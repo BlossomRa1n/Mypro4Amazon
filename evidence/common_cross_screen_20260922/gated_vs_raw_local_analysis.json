@@ -1,0 +1,113 @@
+{
+  "reference": "cross_raw",
+  "candidate": "cross_gated_normalized",
+  "direction": "candidate minus reference",
+  "units": "rate, not percentage points",
+  "bootstrap_replicates": 10000,
+  "bootstrap_seed": 20260922,
+  "method": "paired user bootstrap percentile, two-sided 95%; no multiplicity adjustment",
+  "scope": "single trained seed; exploratory reused screen/test, not independent confirmation",
+  "splits": {
+    "screen": {
+      "users": 20000,
+      "checks": "archive hashes, unique aligned uid/record position, pool_hit, finite metrics and JSON means passed",
+      "reference": {
+        "users": 20000,
+        "hr5": 0.019,
+        "ndcg5": 0.008509332576394081,
+        "pool_hr": 0.05735,
+        "arrays_file": "cross_raw_screen_final_users.npz",
+        "metrics_file": "cross_raw_screen_final_metrics.json"
+      },
+      "candidate": {
+        "users": 20000,
+        "hr5": 0.02,
+        "ndcg5": 0.009014104761183262,
+        "pool_hr": 0.05735,
+        "arrays_file": "cross_gated_normalized_screen_final_users.npz",
+        "metrics_file": "cross_gated_normalized_screen_final_metrics.json"
+      },
+      "metrics": {
+        "hit5": {
+          "delta": 0.001,
+          "ci95": [
+            -0.0005,
+            0.0025
+          ],
+          "improved_users": 130,
+          "worsened_users": 110,
+          "unchanged_users": 19760
+        },
+        "ndcg5": {
+          "delta": 0.0005047721847891807,
+          "ci95": [
+            -0.00020026823768392202,
+            0.0012309453141130502
+          ],
+          "improved_users": 221,
+          "worsened_users": 204,
+          "unchanged_users": 19575
+        }
+      },
+      "hr5_mcnemar_exact_two_sided_p": 0.21995127170296644
+    },
+    "test": {
+      "users": 20000,
+      "checks": "archive hashes, unique aligned uid/record position, pool_hit, finite metrics and JSON means passed",
+      "reference": {
+        "users": 20000,
+        "hr5": 0.01895,
+        "ndcg5": 0.008435981886088849,
+        "pool_hr": 0.0536,
+        "arrays_file": "cross_raw_test_final_users.npz",
+        "metrics_file": "cross_raw_test_final_metrics.json"
+      },
+      "candidate": {
+        "users": 20000,
+        "hr5": 0.02,
+        "ndcg5": 0.008950894664227962,
+        "pool_hr": 0.0536,
+        "arrays_file": "cross_gated_normalized_test_final_users.npz",
+        "metrics_file": "cross_gated_normalized_test_final_metrics.json"
+      },
+      "metrics": {
+        "hit5": {
+          "delta": 0.00105,
+          "ci95": [
+            -0.0004,
+            0.0024512499999999817
+          ],
+          "improved_users": 118,
+          "worsened_users": 97,
+          "unchanged_users": 19785
+        },
+        "ndcg5": {
+          "delta": 0.0005149127781391144,
+          "ci95": [
+            -0.00015939721016213298,
+            0.0011829882114753126
+          ],
+          "improved_users": 208,
+          "worsened_users": 192,
+          "unchanged_users": 19600
+        }
+      },
+      "hr5_mcnemar_exact_two_sided_p": 0.17242848146660275
+    }
+  },
+  "initial_parameter_differences": [
+    "cross_gate_logit"
+  ],
+  "verified_source_sha256": {
+    "cross_raw/initial_state_audit.json": "4919bbc521276b8fc0e89c3b79adf5ecd46b0b84fcfa7cc4a14117fd72bded9d",
+    "cross_gated_normalized/initial_state_audit.json": "2e4b263b699bc52b0953e65a2905674ec00853788c2c05d80be7a6584838203a",
+    "cross_raw_screen_final_users.npz": "426c960207811ed1e5c77cdedf28d934ccbf87122a8710b98633329121607bfd",
+    "cross_raw_screen_final_metrics.json": "4df295c26a45e459526748fdb74ed6f0c6f61cb5e4b68154578ad9f740ef88ec",
+    "cross_gated_normalized_screen_final_users.npz": "57f0a9ac8b0939b0e7f5ecfdab17a632a75a8814a72cc589b28d3dbd412802b8",
+    "cross_gated_normalized_screen_final_metrics.json": "7cb4cd0ccb9edf149982555838f7c63acef7b8c1364498e097d86301a78dea2d",
+    "cross_raw_test_final_users.npz": "241fa3a56233ed909143112af430b9394e51be3fffe52651bad6493efe8411ff",
+    "cross_raw_test_final_metrics.json": "4b54a3ded0260657320dd49d63915839f56569f40be438a55d34b186b913039f",
+    "cross_gated_normalized_test_final_users.npz": "bce6086403643e97de2d0899a168c7f6a57379127488dce5611037775ed2ce01",
+    "cross_gated_normalized_test_final_metrics.json": "da225a8e045417c28b4710e338e1914d6d8ea75e2135c47f00e5d832301abcec"
+  }
+}
