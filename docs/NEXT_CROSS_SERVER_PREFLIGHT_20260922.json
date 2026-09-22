@@ -1,0 +1,211 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-22",
+  "scope": "CPU-only recovery and preflight; no formal experiment",
+  "formal_training_started": false,
+  "formal_test_metrics_generated": false,
+  "protocol_modified": false,
+  "fresh_100k_feasible": false,
+  "historical_completeness_attested": false,
+  "raw_users": 828005,
+  "eligible_users_before_exclusions": 796197,
+  "exclusion_stages": [
+    {
+      "stage": "legacy_predictions_only",
+      "excluded_raw_union_count": 774585,
+      "excluded_present_in_full_base_count": 774585,
+      "excluded_eligible_count": 761333,
+      "remaining_full_base_raw_user_upper_bound": 53420,
+      "remaining_formally_eligible_raw_user_upper_bound": 34864,
+      "certified_fresh_user_count": null,
+      "is_certified_fresh_count": false
+    },
+    {
+      "stage": "legacy_predictions_plus_old_100k",
+      "excluded_raw_union_count": 780970,
+      "excluded_present_in_full_base_count": 780970,
+      "excluded_eligible_count": 765462,
+      "remaining_full_base_raw_user_upper_bound": 47035,
+      "remaining_formally_eligible_raw_user_upper_bound": 30735,
+      "certified_fresh_user_count": null,
+      "is_certified_fresh_count": false
+    },
+    {
+      "stage": "all_recovered_partial_history",
+      "excluded_raw_union_count": 793918,
+      "excluded_present_in_full_base_count": 793918,
+      "excluded_eligible_count": 775950,
+      "remaining_full_base_raw_user_upper_bound": 34087,
+      "remaining_formally_eligible_raw_user_upper_bound": 20247,
+      "certified_fresh_user_count": null,
+      "is_certified_fresh_count": false
+    }
+  ],
+  "history_registry": {
+    "recovered_sources": 144,
+    "unresolved_sources": 25,
+    "unresolved_reason": "Old NPZ files contain hit5/ndcg5/pool_hit only, without user identities.",
+    "raw_union_count": 793918
+  },
+  "main_archive": {
+    "archive_sha256": "1463e479fb9210710b66baa90ab3952406f14dd2eed37203fc5d3674f437b7b5",
+    "archive_bytes": 126508834,
+    "archive_members": 138,
+    "verified_source_files": 137,
+    "all_source_hashes_match": true,
+    "registry_readable": true,
+    "raw_user_union_count": 793918,
+    "source_status_counts": {
+      "recovered": 144,
+      "unresolved": 25
+    },
+    "completeness": {
+      "attested": false,
+      "reason": "Conservative partial recovery; earliest historical sources remain uncertain."
+    }
+  },
+  "supplement_archive": {
+    "archive_sha256": "def6159972e730cbf52b6e5a26190a44a87938d313e7ba2f00fde9d3fb34ebba",
+    "archive_members": 35,
+    "verified_source_files": 34,
+    "all_source_hashes_match": true
+  },
+  "assets": {
+    "data": {
+      "path": "/root/autodl-tmp/future_window_baseline_20260919/data.pkl",
+      "sha256": "e71413ee4eead36954650c1ddb99c8334ead9edecee75ab6b9c01012efd9bb06",
+      "bytes": 322157387,
+      "inode": 6461693831,
+      "device": 2304,
+      "hardlinks": 1
+    },
+    "v2": {
+      "path": "/root/autodl-tmp/future_window_baseline_20260919/v2_best.pth",
+      "sha256": "58301a1ce43a1db609c5cd9a22e7b35f5c01849faf32c3a9ff2d8347f8d311c5",
+      "bytes": 418950145,
+      "inode": 6461693853,
+      "device": 2304,
+      "hardlinks": 1
+    },
+    "svd": {
+      "path": "/root/autodl-tmp/future_window_baseline_20260919/svd.npy",
+      "sha256": "51565a6c1788348162aecea6451ad41779bb496c9f484ca450efd2af716b9d4b",
+      "bytes": 388007040,
+      "inode": 6461693839,
+      "device": 2304,
+      "hardlinks": 1,
+      "shape": [
+        378913,
+        256
+      ],
+      "dtype": "float32"
+    },
+    "cf300": {
+      "path": "/root/autodl-tmp/future_window_cf300_dev_20260919/itemcf.pkl",
+      "sha256": "8fa65999a9574ccc1dd1d0cd5cff97ca21d16db407bdc83e4629c2cd73f240bf",
+      "bytes": 909391418,
+      "inode": 6992228258,
+      "device": 2304,
+      "hardlinks": 1,
+      "arrays": [
+        {
+          "shape": [
+            378913,
+            300
+          ],
+          "dtype": "int32"
+        },
+        {
+          "shape": [
+            378913,
+            300
+          ],
+          "dtype": "float32"
+        }
+      ]
+    },
+    "max_rss_kib": 920684
+  },
+  "capacity": {
+    "raw_user_count": 828005,
+    "training_user_count": 796197,
+    "evaluation_user_count": 818614,
+    "eligible_training_and_evaluation_user_count": 796197,
+    "full_base_train_positions_count": 4731777,
+    "state_tensor_count": 50,
+    "model_state_tensor_bytes": 1260683576,
+    "retained_13_checkpoint_tensor_bytes_minimum": 16388886488,
+    "peak_14_checkpoint_tensor_bytes_minimum": 17649570064,
+    "model_state_tensor_gib": 1.1741030737757683,
+    "retained_13_checkpoint_tensor_gib_minimum": 15.263339959084988,
+    "peak_14_checkpoint_tensor_gib_minimum": 16.437443032860756
+  },
+  "resource_snapshot": {
+    "limits": {
+      "memory_bytes": 2147483648,
+      "cpu": "50000 100000"
+    },
+    "disk": {
+      "/root": {
+        "total": 32212254720,
+        "used": 20278255616,
+        "free": 11933999104
+      },
+      "/root/autodl-tmp": {
+        "total": 64424509440,
+        "used": 54072250368,
+        "free": 10352259072
+      }
+    }
+  },
+  "validation": {
+    "passed_tests": 74,
+    "seconds": 2.878,
+    "test_log_sha256": "2fb029b2da304a9047801e72ede2b82980c2a7403732461c612bdca120185203",
+    "ultra_audit": "Passed within preflight scope; partial history explicitly not certified."
+  },
+  "local_evidence_files": [
+    {
+      "path": "server_snapshot/next_cross_recovery_20260922/archive_verification.json",
+      "sha256": "763d6aa55cf0c84d068cddc7a2c04108b1ea12a27215d6aa70c88ef00c07d19e"
+    },
+    {
+      "path": "server_snapshot/next_cross_recovery_20260922/supplement_verification.json",
+      "sha256": "b0b915013239c1627bc9bb5a15332d2ef80cd46baf1c64a69c9b41205e15dcf8"
+    },
+    {
+      "path": "server_snapshot/next_cross_recovery_20260922/local_capacity_details.json",
+      "sha256": "b20bab4e1075f4bdaff9a3cb00e0fded78dfa58f31eac00e75044c09aebe7d93"
+    },
+    {
+      "path": "server_snapshot/next_cross_recovery_20260922/fresh_eligibility_upper_bounds.json",
+      "sha256": "f2fa72692b41a2bdbacf381399637167954f61eaedf086bee22ca239a842cbed"
+    },
+    {
+      "path": "server_snapshot/next_cross_recovery_20260922/calculate_local_capacity.py",
+      "sha256": "99afa9ccf67735c329b8b0d37e2e40ded380be212ed4b5711419ae3e59f8b374"
+    },
+    {
+      "path": "server_snapshot/next_cross_recovery_20260922/calculate_fresh_upper_bounds.py",
+      "sha256": "1d81255c3cc89568fc7ed8285983654750cf74d69f959f6603d2ede618d33929"
+    }
+  ],
+  "server": {
+    "shutdown_authorized_after_current_preflight": true,
+    "shutdown_requested": true,
+    "last_pre_shutdown_check_utc": "2026-09-22T13:18:06Z",
+    "related_processes": [],
+    "shutdown_command": "/usr/bin/shutdown",
+    "shutdown_requested_at_utc": "2026-09-22T13:20:42Z",
+    "shutdown_requested_at_asia_shanghai": "2026-09-22T21:20:42+08:00",
+    "original_ssh_exit_code": 255,
+    "original_ssh_result": "Shared connection closed after shutdown request",
+    "fresh_ssh_check": {
+      "control_connection_reused": false,
+      "connect_timeout_seconds": 8,
+      "exit_code": 255,
+      "result": "Operation timed out"
+    },
+    "state": "shutdown_confirmed_by_ssh_unavailability_after_shutdown_command"
+  }
+}
