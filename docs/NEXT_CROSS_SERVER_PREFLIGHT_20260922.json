@@ -207,5 +207,19 @@
       "result": "Operation timed out"
     },
     "state": "shutdown_confirmed_by_ssh_unavailability_after_shutdown_command"
+  },
+  "delivery": {
+    "work_commit": "5c413fa5c57b9b04a80a051ae52e49525f37333c",
+    "github_push_completed": false,
+    "https_push": {
+      "exit_code": 128,
+      "reason": "No configured GitHub HTTPS credential; could not read Username."
+    },
+    "existing_ssh_check": {
+      "exit_code": 128,
+      "reason": "GitHub rejected existing key: Permission denied (publickey)."
+    },
+    "remote_changed": false,
+    "raw_identity_files_committed": false
   }
 }
