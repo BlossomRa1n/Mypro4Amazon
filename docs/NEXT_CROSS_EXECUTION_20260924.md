@@ -148,3 +148,7 @@ V2 checkpoint 通过 CPU restricted load，93 个 tensor 有限；SVD 为 378,91
 07:35:52 compare 与 lock 均正常结束（exit 0）：冻结选择为 no_winner，winner=null，final_evaluation_allowed=false，计划 models=[raw]。两种挑战方案都未达到开发接受门槛；按预注册分支，跳过资产迁移、全量训练和最终 test，保留 17,296 名本月未参与评估用户。07:36:35 七份 selection/plan/命令回执/日志已逐文件 SHA 下载到 control_complete，零字节日志与远端一致，退出码与输出在独立回执中可核验。Ultra 继续从完整逐用户数组独立复算后写最终分析；在完整外部日志归档、复算和报告完成前不关机。
 
 08:01:25 北京时间前置关机检查通过。执行 `/usr/bin/shutdown -h now` 后原 SSH 返回 255；等待后使用不带 ControlPath 的全新 SSH，端口 11740 返回 `Connection refused`（退出码 255），已确认实例不可达。证据位于 `server_snapshot/next_cross_20260924/shutdown/SHUTDOWN_CONFIRMED.json`。
+
+## Git 收尾
+
+服务器关机确认后，项目变更已提交为 `3d6b5fa`（`Add audited cross-token validation workflow and results`），并推送到 `origin/master`。推送返回成功；随后以远端引用复核 commit。
