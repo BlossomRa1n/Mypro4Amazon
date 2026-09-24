@@ -1,0 +1,47 @@
+[
+  {
+    "epoch": 1,
+    "loss": 0.8661767244338989,
+    "steps": 3,
+    "seconds": 0.018162375083193183,
+    "screen": {
+      "hr5": 0.0,
+      "ndcg5": 0.0,
+      "pool_hit": 0.0,
+      "users": 2
+    },
+    "cross_gate": 0.9999545812606812,
+    "cross_token_norm": 0.0,
+    "cross_type_offset_norm": 0.0
+  },
+  {
+    "epoch": 2,
+    "loss": 0.7941064039866129,
+    "steps": 3,
+    "seconds": 0.017427584039978683,
+    "screen": {
+      "hr5": 0.0,
+      "ndcg5": 0.0,
+      "pool_hit": 0.0,
+      "users": 2
+    },
+    "cross_gate": 0.9999545812606812,
+    "cross_token_norm": 0.0,
+    "cross_type_offset_norm": 0.0
+  },
+  {
+    "epoch": 3,
+    "loss": 0.9106953144073486,
+    "steps": 3,
+    "seconds": 0.018340124981477857,
+    "screen": {
+      "hr5": 0.0,
+      "ndcg5": 0.0,
+      "pool_hit": 0.0,
+      "users": 2
+    },
+    "cross_gate": 0.9999545812606812,
+    "cross_token_norm": 0.0,
+    "cross_type_offset_norm": 0.0
+  }
+]

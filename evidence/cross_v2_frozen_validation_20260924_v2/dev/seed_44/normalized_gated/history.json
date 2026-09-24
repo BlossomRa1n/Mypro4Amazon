@@ -1,0 +1,47 @@
+[
+  {
+    "epoch": 1,
+    "loss": 0.890728751818339,
+    "steps": 3,
+    "seconds": 0.019825333962216973,
+    "screen": {
+      "hr5": 0.0,
+      "ndcg5": 0.0,
+      "pool_hit": 0.0,
+      "users": 2
+    },
+    "cross_gate": 0.05012928321957588,
+    "cross_token_norm": 0.0077828518114984035,
+    "cross_type_offset_norm": 0.004170631989836693
+  },
+  {
+    "epoch": 2,
+    "loss": 0.8245603640874227,
+    "steps": 3,
+    "seconds": 0.019094084040261805,
+    "screen": {
+      "hr5": 0.0,
+      "ndcg5": 0.0,
+      "pool_hit": 0.0,
+      "users": 2
+    },
+    "cross_gate": 0.0502084381878376,
+    "cross_token_norm": 0.008378246799111366,
+    "cross_type_offset_norm": 0.0059958770871162415
+  },
+  {
+    "epoch": 3,
+    "loss": 0.9058215618133545,
+    "steps": 3,
+    "seconds": 0.019580665975809097,
+    "screen": {
+      "hr5": 0.0,
+      "ndcg5": 0.0,
+      "pool_hit": 0.0,
+      "users": 2
+    },
+    "cross_gate": 0.05023195594549179,
+    "cross_token_norm": 0.008510150015354156,
+    "cross_type_offset_norm": 0.006310425233095884
+  }
+]

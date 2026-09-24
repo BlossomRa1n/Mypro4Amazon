@@ -1,0 +1,10 @@
+{
+  "kind": "synthetic-only nine-group CPU smoke",
+  "test_users": 2,
+  "groups": 9,
+  "test_accessed": false,
+  "test_cache_exists": false,
+  "smoke_final_allowed": false,
+  "selection_status": "smoke_only",
+  "python": "/private/tmp/token-control-local-env/bin/python"
+}

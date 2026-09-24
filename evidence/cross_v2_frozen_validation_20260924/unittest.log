@@ -1,0 +1,16 @@
+Candidate fusion:   0%|          | 0/3 [00:00<?, ?it/s]Candidate fusion: 100%|██████████| 3/3 [00:00<00:00, 2255.81it/s]
+Candidate fusion:   0%|          | 0/3 [00:00<?, ?it/s]Candidate fusion: 100%|██████████| 3/3 [00:00<00:00, 7516.67it/s]
+Pure DIN rerank:   0%|          | 0/1 [00:00<?, ?it/s]Pure DIN rerank: 100%|██████████| 1/1 [00:00<00:00, 492.12it/s]
+Candidate fusion:   0%|          | 0/3 [00:00<?, ?it/s]Candidate fusion: 100%|██████████| 3/3 [00:00<00:00, 6725.23it/s]
+Inner-train ItemCF:   0%|          | 0/1 [00:00<?, ?it/s]Inner-train ItemCF: 100%|██████████| 1/1 [00:00<00:00, 3137.10it/s]
+Inner-heldout recall negatives:   0%|          | 0/12 [00:00<?, ?it/s]Inner-heldout recall negatives: 100%|██████████| 12/12 [00:00<00:00, 20510.04it/s]
+Candidate fusion:   0%|          | 0/11 [00:00<?, ?it/s]Candidate fusion: 100%|██████████| 11/11 [00:00<00:00, 7482.54it/s]
+Full-catalog V2:   0%|          | 0/9 [00:00<?, ?it/s]Full-catalog V2:  78%|███████▊  | 7/9 [00:00<00:00, 66.30it/s]Full-catalog V2: 100%|██████████| 9/9 [00:00<00:00, 73.94it/s]
+Candidate fusion:   0%|          | 0/1031 [00:00<?, ?it/s]Candidate fusion:  33%|███▎      | 345/1031 [00:00<00:00, 3444.76it/s]Candidate fusion:  68%|██████▊   | 704/1031 [00:00<00:00, 3527.22it/s]Candidate fusion: 100%|██████████| 1031/1031 [00:00<00:00, 3538.72it/s]
+Candidate fusion:   0%|          | 0/4 [00:00<?, ?it/s]Candidate fusion: 100%|██████████| 4/4 [00:00<00:00, 8848.74it/s]
+Pure DIN rerank:   0%|          | 0/1 [00:00<?, ?it/s]Pure DIN rerank: 100%|██████████| 1/1 [00:00<00:00, 883.20it/s]
+Pure DIN rerank:   0%|          | 0/1 [00:00<?, ?it/s]Pure DIN rerank: 100%|██████████| 1/1 [00:00<00:00, 1083.52it/s]
+----------------------------------------------------------------------
+Ran 88 tests in 3.873s
+
+OK

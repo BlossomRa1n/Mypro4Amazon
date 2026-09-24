@@ -137,7 +137,7 @@ class StageGuardTests(unittest.TestCase):
 
     def test_final_train_and_test_real_artifact_integration(self):
         # Only the authorization boundary is mocked; production smoke cannot lock.
-        from test_cross_multiseed import _fixture
+        from tests.test_cross_multiseed import _fixture
         runner.torch.set_num_threads(1)
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp); base, history=_fixture(root); protocol_dir=root/'protocol'
@@ -152,10 +152,14 @@ class StageGuardTests(unittest.TestCase):
             with patch.object(runner, '_load_plan', return_value=plan):
                 manifest=runner.final_train(args)
                 self.assertEqual(manifest['test_history_coverage_users'], 2)
+                self.assertEqual(manifest['history_scope'],protocol['history_scope'])
+                self.assertEqual(manifest['history_scope_sha256'],protocol['history_scope_sha256'])
                 result=runner.final_test(args)
                 self.assertEqual(result['paired']['users'], 2)
+                self.assertEqual(result['history_scope_sha256'],protocol['history_scope_sha256'])
                 marker=protocol_dir/'TEST_STARTED.json'
                 self.assertEqual(json.loads(marker.read_text())['status'], 'complete')
+                self.assertEqual(json.loads(marker.read_text())['history_scope_sha256'],protocol['history_scope_sha256'])
                 with self.assertRaisesRegex(RuntimeError, 'second test'):
                     runner.final_test(args)
                 import shutil

@@ -1,0 +1,83 @@
+{
+  "protocol": "next-cross-multiseed-20260924-v2",
+  "variant": "zero_cross",
+  "seed": 44,
+  "init_seed": 424244,
+  "epochs": 3,
+  "train_rows": 20,
+  "train_positions_sha256": "2739597e459d9f415d6921771f3013127f02c2967d442636bfeb4e730a143b59",
+  "model_config": {
+    "num_users": 16,
+    "num_items": 114,
+    "num_brands": 2,
+    "num_categories": 3,
+    "embed_dim": 8,
+    "brand_embed_dim": 8,
+    "hidden_dims": [
+      64,
+      32
+    ],
+    "hist_len": 5,
+    "dropout": 0.1,
+    "token_dim": 8,
+    "fusion": "concat",
+    "cross_mode": "zero_cross"
+  },
+  "negative_policy": "12 random + 2 ranks11-25 + 2 ranks26-50",
+  "trace_files": {
+    "1": {
+      "sha256": "6e2b870981bd17931676aa5bc8ff3d237cc8c422a3ac2c602bc40c8f3fed53cb",
+      "rows": 20,
+      "order_sha256": "b1b43d665a7c145eabf9c9fe631ed4e91c4131c0a3b2002830e8b5cd73067104",
+      "batch_sizes": [
+        8,
+        8,
+        4
+      ],
+      "negative_sources": {
+        "band11_25": 40,
+        "band26_50": 40,
+        "candidate_fallback": 0,
+        "random": 240
+      },
+      "covered_users": 4
+    },
+    "2": {
+      "sha256": "762446c69487c5c2bb85a5d1b09abd264b7e715b7d6f06137c81f17f077faae9",
+      "rows": 20,
+      "order_sha256": "008becc22eb673d64d1bda73e3a18b3776539c46e97ce752ff6871f51ad74ad4",
+      "batch_sizes": [
+        8,
+        8,
+        4
+      ],
+      "negative_sources": {
+        "band11_25": 40,
+        "band26_50": 40,
+        "candidate_fallback": 0,
+        "random": 240
+      },
+      "covered_users": 4
+    },
+    "3": {
+      "sha256": "347be3b41abbec5f0f9a1f264d51c3259ceb1d4f4772cade4e3210e7293952f8",
+      "rows": 20,
+      "order_sha256": "a2b2444a9f979352993f4922cc4adf8f456633fcf85cbb67224a1f89bac51b92",
+      "batch_sizes": [
+        8,
+        8,
+        4
+      ],
+      "negative_sources": {
+        "band11_25": 40,
+        "band26_50": 40,
+        "candidate_fallback": 0,
+        "random": 240
+      },
+      "covered_users": 4
+    }
+  },
+  "screen_pool_hash": "7b8f80b229a97eb7da0f9c097f63c62d907197d0474be415d261add34dfec507",
+  "base_data_id": "182f6726fa2dfc00e09c6491ea4374ed0118a8c1d21d94f58be75f1b93c105d8",
+  "checkpoint_sha256": "94803676c6d0e8a8636d4a6093546fbbd576cad19ee9b661decda065e953f18a"
+}

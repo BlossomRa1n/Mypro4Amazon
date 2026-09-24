@@ -1,0 +1,17 @@
+{
+  "sha256": "d7a70cf5d8b3c37ca485f2c10be009e632415a9c2724821216413a6cf8521cd2",
+  "rows": 20,
+  "order_sha256": "d812af985480b0b8f7de276e9c4db98e0864af5854e1da8e047487e95e7fa70c",
+  "batch_sizes": [
+    8,
+    8,
+    4
+  ],
+  "negative_sources": {
+    "band11_25": 40,
+    "band26_50": 40,
+    "candidate_fallback": 0,
+    "random": 240
+  },
+  "covered_users": 4
+}

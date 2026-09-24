@@ -1,0 +1,6 @@
+{
+  "status": "complete",
+  "checkpoint": "last.pth",
+  "checkpoint_sha256": "ca7f6a0199dec7556475f9e5b31ad2554d45d0835f809170bef478d21662bd32",
+  "epoch": 3
+}

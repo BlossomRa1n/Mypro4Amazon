@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "raw_user_ids": [
+    "u000",
+    "u001",
+    "u002",
+    "u003",
+    "u004",
+    "u005",
+    "u006",
+    "u007",
+    "u008",
+    "u009",
+    "u010",
+    "u011"
+  ],
+  "sources": [
+    {
+      "path": "/Users/admin/projects/分布式训练/AI/Mypro4Amazon/evidence/cross_v2_frozen_validation_20260924_v2/history-source.txt",
+      "sha256": "dd2c1ba123da03a0ce1d8b92485d00c280f7230fa1bcfa3760374234f94e45ad",
+      "mode": "fixture"
+    }
+  ],
+  "completeness": {
+    "attested": true,
+    "note": "fixture source"
+  },
+  "source_file": "/Users/admin/projects/分布式训练/AI/Mypro4Amazon/evidence/cross_v2_frozen_validation_20260924_v2/historical.json",
+  "source_file_sha256": "e409402755fde940f4a43aaa01538568d6a2f0b4a5dbb3e62a861fd31fbc6d00"
+}

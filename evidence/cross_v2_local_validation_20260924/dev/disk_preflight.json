@@ -1,0 +1,16 @@
+{
+  "stage": "dev",
+  "model_tensor_bytes": 36620,
+  "retained_models": 9,
+  "atomic_peak_models": 10,
+  "lifetime_retained_models": 13,
+  "lifetime_atomic_peak_models": 14,
+  "candidate_pool_estimate_bytes": 1049632,
+  "candidate_atomic_peak_bytes": 1049632,
+  "same_filesystem": true,
+  "safety_reserve_per_filesystem_bytes": 0,
+  "required_estimate_bytes": 1415832,
+  "free_bytes": 411869470720,
+  "cache_free_bytes": 411869470720,
+  "note": "Stage-local allocation; immutable prior evidence is retained. NPY files are renamed without a second payload copy. Final stage has a separate mandatory check."
+}

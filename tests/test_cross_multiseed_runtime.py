@@ -57,13 +57,33 @@ class RuntimeTests(unittest.TestCase):
                 for variant in r.VARIANTS:
                     d=root/'dev'/f'seed_{seed}'/variant
                     traces.append(json.loads((d/'epoch_3_trace.json').read_text()))
+                    self.assertEqual(sum(traces[-1]['batch_sizes']),traces[-1]['rows'])
+                    expected=[len(x) for x in r._batch_chunks(np.arange(traces[-1]['rows']),8)]
+                    self.assertEqual(traces[-1]['batch_sizes'],expected)
                     checkpoint=torch.load(d/'last.pth',weights_only=False)
                     self.assertEqual(checkpoint['epoch'],3)
+                    self.assertEqual(checkpoint['manifest']['history_scope_sha256'],m['history_scope_sha256'])
                     self.assertGreater(int(checkpoint['model']['head.1.num_batches_tracked']),3)
                     self.assertTrue(all(torch.isfinite(x).all() for x in checkpoint['model'].values()))
                     hist=json.loads((d/'history.json').read_text())
+                    self.assertEqual(hist[-1]['steps'],len(traces[-1]['batch_sizes']))
                     if variant=='zero_cross':self.assertEqual(hist[-1]['cross_token_norm'],0.)
                 self.assertEqual(traces[0],traces[1]);self.assertEqual(traces[0],traces[2])
             with self.assertRaises(FileExistsError):r.dev(a)
 
 if __name__=='__main__':unittest.main()
+
+class DiskBudgetTests(unittest.TestCase):
+    def test_stage_local_binary_pool_budget_and_safety_margin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);run=root/'run';cache=root/'cache';run.mkdir();cache.mkdir()
+            usage=SimpleNamespace(free=100*1024**3)
+            with patch.object(r.shutil,'disk_usage',return_value=usage):
+                receipt=r._disk_preflight(run,cache,1000,50,75,'dev',9,10)
+            self.assertEqual(receipt['candidate_pool_estimate_bytes'],50*304+1024**2)
+            self.assertEqual(receipt['atomic_peak_models'],10)
+            self.assertEqual(receipt['lifetime_atomic_peak_models'],14)
+            self.assertEqual(receipt['safety_reserve_per_filesystem_bytes'],1024**3)
+            with patch.object(r.shutil,'disk_usage',return_value=SimpleNamespace(free=1)):
+                with self.assertRaisesRegex(OSError,'insufficient dev disk'):
+                    r._disk_preflight(run,cache,1000,50,75,'dev',9,10)

@@ -1,0 +1,16 @@
+{
+  "python": "/private/tmp/token-control-local-env/bin/python",
+  "test_command": "PYTHONPATH=code /private/tmp/token-control-local-env/bin/python -m unittest discover -s tests -q",
+  "file_sha256": {
+    "code/run_cross_multiseed.py": "b40a4ea9742d90efe4467ff8609d8be358616977a633741722a6a8fc37a4313a",
+    "code/cross_pool_cache.py": "e328ad066104df75b496450cf169e6ea47846c7c8d8194e38959b7652c914505",
+    "tests/test_cross_pool_cache.py": "966d3be4047fc8c6fc6f9c0b7a7f65d9f797df39e13d3838a274c41e7858351d",
+    "tests/test_cross_multiseed.py": "4df9767f49309fe6142c0d7da6cae2576020e39cd24519bb5e66f36c811055da",
+    "tests/test_cross_multiseed_stages.py": "f2ccd66c4a235944840c1bed167a075290021835e6e88ec846b91aa3affb694f",
+    "tests/test_cross_multiseed_runtime.py": "3c562daea96e32c83005e4d0f8c6ea7734b904b79fbb04124342642234c8ab2c"
+  },
+  "unittest_log_sha256": "be36895770870f59097ce7d1691c5bc229991dae4ead230c5eb09a39c2d3eacf",
+  "smoke_summary_sha256": "5fbb9350c79cda05c1bc22caeb3fd6c8cee3d5eb91d5217adb8d5f8a25fd218d",
+  "py_compile": "passed",
+  "git_diff_check": "passed"
+}
