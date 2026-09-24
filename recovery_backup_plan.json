@@ -1,0 +1,118 @@
+{
+  "schema": "recovery-backup-plan-v1",
+  "created_utc": "2026-09-24T16:00:00Z",
+  "scope": "read-only inventory and recoverable backup design; no archive created and no experiment started",
+  "project_root": "/Users/admin/projects/分布式训练/AI/Mypro4Amazon",
+  "git": {
+    "git_dir": ".git",
+    "git_common_dir": ".git",
+    "worktree_is_shallow": false,
+    "head": "30c17af8255ccc40fbf933774005b303a518595a",
+    "refs": "git bundle --all succeeded; 60 MiB temporary bundle measured at /tmp/Mypro4Amazon_refs.bundle",
+    "dirty_tracked_patch": {
+      "path": "/tmp/Mypro4Amazon_dirty.patch",
+      "bytes": 0,
+      "note": "No tracked-file edits in git diff at inventory time."
+    },
+    "untracked_restore_manifest": {
+      "path": "/tmp/Mypro4Amazon_untracked.list",
+      "files": 16,
+      "bytes": 0,
+      "note": "Includes recovery_backup_plan.json itself plus the 15 pre-existing untracked source/doc/test/tool files."
+    },
+    "restore": [
+      "git clone or git init from refs bundle",
+      "git checkout the recorded HEAD/ref",
+      "apply dirty patch if nonempty",
+      "copy every listed untracked project file",
+      "verify hashes from the restored evidence manifests"
+    ]
+  },
+  "project_material": {
+    "tracked_code_docs_tests_tools_scripts_requirements": {
+      "file_count": 151,
+      "bytes": 1902328
+    },
+    "untracked_code_docs_tests_tools": {
+      "file_count": 15,
+      "bytes": 180563,
+      "paths_manifest": "/tmp/Mypro4Amazon_untracked.list",
+      "files": 16
+    },
+    "combined_source_estimate_bytes": 2082891,
+    "note": "The untracked byte total is rounded from the source inventory; a packer must measure exact bytes before writing its archive. No generated __pycache__ files are included."
+  },
+  "large_assets_reuse": [
+    {
+      "logical_name": "base_data.pkl",
+      "local_path": "server_snapshot/next_cross_recovery_20260922/full_base_data.pkl",
+      "bytes": 322157387,
+      "sha256": "e71413ee4eead36954650c1ddb99c8334ead9edecee75ab6b9c01012efd9bb06",
+      "reuse": "hardlink/copy reference; do not duplicate"
+    },
+    {
+      "logical_name": "base_svd.npy",
+      "local_path": "server_snapshot/next_cross_20260924/base_archive/svd.npy",
+      "bytes": 388007040,
+      "sha256": "51565a6c1788348162aecea6451ad41779bb496c9f484ca450efd2af716b9d4b",
+      "reuse": "exact local manifest reference"
+    },
+    {
+      "logical_name": "base_itemcf.pkl",
+      "local_path": "server_snapshot/next_cross_20260924/base_archive/itemcf.pkl",
+      "bytes": 909391418,
+      "sha256": "8fa65999a9574ccc1dd1d0cd5cff97ca21d16db407bdc83e4629c2cd73f240bf",
+      "reuse": "exact local manifest reference"
+    },
+    {
+      "logical_name": "base_v2_best.pth",
+      "local_path": "server_snapshot/next_cross_20260924/base_archive/v2_best.pth",
+      "bytes": 418950145,
+      "sha256": "58301a1ce43a1db609c5cd9a22e7b35f5c01849faf32c3a9ff2d8347f8d311c5",
+      "reuse": "exact local manifest reference"
+    },
+    {
+      "logical_name": "diagnostic_run",
+      "local_path": "server_snapshot/training_diagnostics_20260924/run",
+      "bytes": 3271243914,
+      "reuse": "manifest-bound existing checkpoints/arrays; no duplicate compression unless requested"
+    },
+    {
+      "logical_name": "development_archive",
+      "local_path": "server_snapshot/next_cross_20260924/dev_complete",
+      "bytes": 11357703868,
+      "reuse": "manifest-bound existing archived checkpoints; no duplicate compression"
+    }
+  ],
+  "required_manifests": [
+    "server_snapshot/next_cross_20260924/base_archive_plan/COMPLETED_20260923T201120Z.json",
+    "server_snapshot/next_cross_20260924/base_archive_plan/inventory_and_reuse.json",
+    "server_snapshot/training_diagnostics_20260924/source_v2_manifest.json",
+    "server_snapshot/training_diagnostics_20260924/predownload_v1_receipt.json"
+  ],
+  "size_and_time_estimate": {
+    "source_bundle_plus_untracked": "approximately 62 MiB before compression (60 MiB refs bundle plus approximately 2 MiB source/untracked files)",
+    "asset_duplication_avoided_bytes": "at least 1.8 GiB for base assets, plus existing diagnostic/development checkpoint trees retained by manifest references",
+    "estimated_pack_time": "under 1 minute for source-only bundle on local SSD; 5-20 minutes if a future operator elects to copy the 2.0 GiB base assets; substantially longer for 3.3 GiB diagnostic or 11.4 GiB development archives",
+    "disk_policy": "do not create a duplicate full-data archive while local exact-hash copies exist"
+  },
+  "privacy_and_push_policy": {
+    "exclude": [
+      "SSH sockets, passwords, private keys, host keys, environment secrets, raw server command credentials",
+      "raw user IDs from public source archives unless the existing sealed evidence manifest explicitly requires them"
+    ],
+    "server_snapshot": "local evidence only; never publish automatically",
+    "public_push": "source code and redacted manifests may be pushed only after a separate review; original user IDs and data/checkpoint blobs remain local or in their existing controlled archive",
+    "gitignore_warning": "gitignored data/model/output files are not silently assumed recoverable; each required large asset is referenced by exact local path, byte size, and SHA-256 above"
+  },
+  "minimal_complete_restore": [
+    "refs bundle or normal git remote refs",
+    "recovery_backup_plan.json",
+    "dirty tracked patch",
+    "all 15 untracked source/doc/test/tool files",
+    "requirements and scripts",
+    "this plan plus required manifests",
+    "exact local large-asset references (or independently copied files verified against listed SHA-256)"
+  ],
+  "status": "plan_only; no backup archive created"
+}
